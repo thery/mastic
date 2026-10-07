@@ -263,6 +263,9 @@ ast:
 error. At the beginning of a declaration, a token that does not fit is always
 turned into an error.
 
+[`STRATEGY.md`](STRATEGY.md) compares this strategy, rule by rule, with the
+one of the first version (the PR LPCIC/elpi#385 on Elpi).
+
 ## 7. Never crash
 
 An error-resilient parser must never fail. Three things made the Elpi parser
