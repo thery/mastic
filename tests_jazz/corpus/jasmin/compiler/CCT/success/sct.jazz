@@ -1,0 +1,22 @@
+#[sct="{ ptr: transient, val : { n: d, s: secret } } -> d"]
+export
+fn load(reg ptr u32[1] a) -> reg u32 {
+  _ = #init_msf();
+  reg u32 r;
+  r = a[0];
+  return r;
+}
+
+#[sct="{n: a, s: secret} × {n: b, s: secret} → c"
+, constraints="a <= c, b <= c"]
+#[ct="x * y -> {x, y}"]
+export fn sum(
+  reg u32 x,
+  reg u32 y)
+-> reg u32 {
+  _ = #init_msf();
+  reg u32 r;
+  r = x;
+  r += y;
+  return r;
+}

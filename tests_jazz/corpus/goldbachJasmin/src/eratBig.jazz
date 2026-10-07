@@ -1,0 +1,204 @@
+require "math.jazz"
+require "wheel30.jazz"
+require "wheel210.jazz"
+require "sieving_prime.jazz"
+require "memory.jazz"
+require "sieve.jazz"
+
+namespace EratBig {
+
+/* The number of slots a run uses is Cfg::BIGMEMSIZE = ((SieveBytes - 1 +
+   10 * (R / 30) + 10) >> log2SieveBytes) + 1, R the run's root (Cfg::ROOT):
+   the window covers the stride of the largest prime the run stores.  The
+   array is sized for the worst run: the smallest segment, k = 18, and the
+   largest root, R = 2^32 - 1, since hi < 2^64 makes the run's end fit in
+   u64 and so its root below 2^32:
+     ((2^18 - 1 + 10 * (4294967295 / 30) + 10) >> 18) + 1 = 5463. */
+param int BigMemSizeMax = 5463;
+
+namespace BigMem {
+
+  type t = Bucket::sievingPrimePtr[BigMemSizeMax];        
+
+  inline fn init (reg Bucket::bucketPtr pool, reg ptr t mem, reg u64 bigMemSize) -> reg Bucket::bucketPtr, reg ptr t 
+  {
+    /* Null, not a bucket: a slot only gets one when something is stored in it,
+       Bucket::isFull sending Null down the allocation path. That spares
+       BigMemSize buckets - about 20 MB - of pool touched up front. */
+    reg u64 i = 0;    
+    while (i < bigMemSize) {
+      mem[i] = Null;
+      i += 1;
+    }
+    return pool, mem;
+  }
+
+  inline fn getEnd (reg ptr t mem, reg u64 segment) -> reg Bucket::sievingPrimePtr 
+  { 
+    reg Bucket::sievingPrimePtr end = mem[segment];
+    return end;
+  }
+
+  /* `low` is (multipleIndex << wheelIndexBits) | wheelIndex, with multipleIndex
+     NOT yet reduced modulo the sieve: what sticks out above SieveBytes is the
+     segment the multiple falls into. Reducing multipleIndex and splitting off
+     the segment are therefore one shift and one mask on the packed value, at
+     shifted weights - no need to take the two fields apart. */
+  /* shift = log2SieveBytes + wheelIndexBits and mask = (SieveBytes << wheelIndexBits) - 1
+     are Cfg::SHIFT and Cfg::MASK, held in registers by the caller. */
+  inline fn storeSievingPrimeLow (reg Bucket::bucketPtr pool,
+                  reg ptr t mem, reg u64 sievePrime, reg u64 low,
+                  reg u64 shift, reg u64 mask) ->
+    reg Bucket::bucketPtr, reg ptr t
+  {
+    reg Bucket::sievingPrimePtr end;
+    reg SievingPrime::t sievingPrime;
+    reg u64 segment = low; segment >>u= (shift & 63);
+    low &= mask;
+    sievingPrime = SievingPrime::fromLow(sievePrime, low);
+    end = getEnd(mem, segment);
+    pool, end = MemoryPool::storeSievingPrime(pool, end, sievingPrime);
+    mem[segment] = end;
+    return pool, mem;
+  }
+
+  inline fn storeSievingPrime (reg Bucket::bucketPtr pool, 
+                  reg ptr t mem, reg u64 sievePrime, reg u64 multipleIndex, reg u64 wheelIndex,
+                  reg u64 shift, reg u64 mask) -> 
+    reg Bucket::bucketPtr, reg ptr t 
+  {
+    reg u64 low = multipleIndex; low <<= SievingPrime::wheelIndexBits; low |= wheelIndex;
+    pool, mem = storeSievingPrimeLow(pool, mem, sievePrime, low, shift, mask);
+    return pool, mem;
+  }
+
+  /* Rotate the segment slots one step down: slot i takes over the buckets of
+     slot i+1, and slot 0 - whose sieving primes have just been consumed, so
+     its bucket is empty - is recycled as the new last slot.
+     To be called once per segment, after crossing off. */
+  inline fn rotate (reg ptr t mem, reg u64 bigMemSize) -> reg ptr t
+  {
+    reg Bucket::sievingPrimePtr mem0 = mem[0];   // empty, becomes the last slot
+    reg Bucket::sievingPrimePtr end;
+    reg u64 last = bigMemSize; last -= 1;
+    reg u64 i = 0;
+    while (i < last) {
+      end = mem[i + 1];
+      mem[i] = end;
+      i += 1;
+    }
+    mem[last] = mem0;
+    return mem;
+  }
+
+}
+
+fn crossOff(reg ptr Sieve::t seg, reg ptr BigMem::t mem, reg Bucket::bucketPtr pool, reg ptr Cfg::t cfg) -> 
+  reg ptr Sieve::t , reg ptr BigMem::t, reg Bucket::bucketPtr
+{
+  reg Bucket::bucketPtr bucket;
+  reg Bucket::sievingPrimePtr end, start;
+  reg ptr Wheel210::t wheel = Wheel210::wheel;
+  /* the two run-time constants of the packing, live across the walk */
+  reg u64 shift = cfg[Cfg::SHIFT];
+  reg u64 mask = cfg[Cfg::MASK];
+  stack u64 bigMemSize = cfg[Cfg::BIGMEMSIZE];
+
+  /* `end` is the next free slot, so the entries of the bucket are
+     [start, end) and an untouched slot holds Null. When mem[0] is Null the
+     guard computes a bucket address from Null - never dereferenced, since
+     start <u Null is false and the loop is not entered.
+
+     The walk goes DOWN from `end`, not up from `start`: a bucket is filled
+     upwards, so its entries in the order of the list it stands for are
+     end - 8, end - 16, ... , start. Crossing off does not care -- the bits it
+     clears are the same in any order, and so is the cost -- but reading in the
+     list's own order is what lets a proof talk about the list rather than
+     about a permutation of it. */
+  while {
+    end = mem[0];
+    bucket = Bucket::bucketOf(end);
+    start = Bucket::getStart(bucket);
+  } (start <u end) {
+    /* Null when the chain ends: that is a free slot, nothing to allocate. */
+    mem[0] = Bucket::getNext(bucket);    
+    while{
+      reg u64 sievePrime, multipleIndex, wheelIndex;
+      end -= 8;
+      reg SievingPrime::t sievingPrime = [:u64 end];
+      sievePrime, multipleIndex, wheelIndex = SievingPrime::decompose(sievingPrime);
+      reg u64 elem = (64u)wheel[wheelIndex];
+      reg u8 unsetBit;
+      reg u64 nextMultipleFactor, correctNext;
+      unsetBit, nextMultipleFactor, correctNext = WheelElem::decompose(elem);
+      seg[multipleIndex] &= unsetBit; 
+      nextMultipleFactor *= sievePrime;
+      multipleIndex += nextMultipleFactor;
+      /* correctNext holds correct at the weight multipleIndex has once shifted
+         into the packed sieving prime, and next at the weight of wheelIndex.
+         So this shift and this add perform `+= correct`, the `<< 9` and the
+         `| next` at once, and hand storeSievingPrimeLow the low half already
+         assembled. See WheelElem in wheel_elem.jazz. */
+      reg u64 low = multipleIndex; low <<= SievingPrime::wheelIndexBits;
+      low += correctNext;
+      pool, mem = BigMem::storeSievingPrimeLow(pool, mem, sievePrime, low, shift, mask); 
+    } (start <u end)  
+    /* from `start', which has not moved: `end' has walked down onto it. */
+    bucket = Bucket::bucket(start);
+    pool = MemoryPool::freeBucket(pool, bucket);
+  }
+  // Prepare for the next segment
+  reg u64 bms = bigMemSize;
+  mem = BigMem::rotate(mem, bms);
+  return seg, mem, pool;
+}
+fn addPrimes(reg Bucket::bucketPtr pool, reg ptr BigMem::t mem, reg Primes::primePtr primes, reg Primes::primePtr end, reg u64 segmentLow, reg ptr Cfg::t cfg) -> 
+   reg Bucket::bucketPtr, reg ptr BigMem::t, reg Bucket::bucketPtr
+{
+  if (primes != Null) {
+    stack Primes::primePtr lastPrime = Null; 
+    reg Primes::primePtr end_cur = Primes::endOf(end, primes);
+    reg ptr Wheel30::RESIDUES_t residues = Wheel30::RESIDUES; 
+    stack u64 segmentsSpan = cfg[Cfg::SEGSPAN];
+    stack u64 maxEratMedium = cfg[Cfg::MAXMEDIUM];
+    stack u64 shift_s = cfg[Cfg::SHIFT];
+    stack u64 mask_s = cfg[Cfg::MASK];
+    while {   
+      reg u64 sievePrime, r, rc, multiple, multipleIndex, qwheelIndex, wheelIndex;  
+      sievePrime, r = Primes::decompose(primes);
+      rc = (64u)residues[r];
+      reg u64 prime = sievePrime; prime *= 30; prime += rc;
+      if (prime > maxEratMedium) {
+        reg bool overflow;
+        multiple, qwheelIndex, overflow = Wheel210::firstMultipleOv(sievePrime, rc, segmentLow);
+        /* No wheel multiple of the prime below 2^64: nothing to store, the
+           prime is dropped and the queue moves on. */
+        #[unlikely]
+        if (overflow) {
+          pool, primes, end_cur = Primes::nextPrime(pool, primes, end, end_cur, Primes::CLEAR);
+        } else {
+          multiple -= segmentLow;
+          if (multiple < segmentsSpan) {
+            multipleIndex = udiv_64_imm(multiple, Wheel30::WHEEL);
+            wheelIndex = r; wheelIndex *= Wheel210::NRES; wheelIndex += qwheelIndex;
+            reg u64 shift = shift_s;
+            reg u64 mask = mask_s;
+            pool, mem = BigMem::storeSievingPrime(pool, mem, sievePrime, multipleIndex, wheelIndex, shift, mask);
+            pool, primes, end_cur = Primes::nextPrime(pool, primes, end, end_cur, Primes::CLEAR);
+          } else {
+            lastPrime = primes;
+            primes = Null;
+          }
+        }
+      } else {
+        lastPrime = primes;
+        primes = Null;
+      } 
+    } (primes != Null)
+    primes = lastPrime;
+  }    
+
+  return pool, mem, primes;
+} 
+
+}

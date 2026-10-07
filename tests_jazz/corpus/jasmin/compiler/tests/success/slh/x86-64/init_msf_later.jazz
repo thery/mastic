@@ -1,0 +1,23 @@
+#[sct = "transient → public"]
+export
+fn protect_init_msf_later(reg u64 p) -> reg u64 {
+    reg u64 msf, temp;
+    reg u64 sum;
+    reg u64 i;
+    reg bool b;
+
+    _ = #init_msf();
+    sum = 0;
+    i = 0;
+
+    while{b = i < 10;}(b){
+        temp = [p + i];
+        #declassify(temp);
+        sum += temp;
+        i += 1;
+    }
+    msf = #init_msf();
+    sum = #protect(sum, msf);
+
+    return sum;
+}

@@ -1,0 +1,4 @@
+export fn f (reg ptr u64[1] a, reg ptr u64[1] b) -> reg ptr u64[1] {
+  a[0:1] = b[0:1];
+  return a;
+}

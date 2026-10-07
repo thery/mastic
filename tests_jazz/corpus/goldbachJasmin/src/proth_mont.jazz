@@ -1,0 +1,242 @@
+/* proth_mont.jazz -- the Proth test's arithmetic on NLIMBS 64-bit limbs,
+   common to x86-64 and ARMv8-A through the architecture layer
+   proth_arch.jazz (src/ for x86-64; src_armv8a/ on the branch
+   armv8a-backend): see proth_test.jazz for the description.  */
+
+require "proth_arch.jazz"   /* the x86-64 layer; armv8a-backend has the ARMv8-A one */
+
+/* accumulator window at position k: x[k] += (b1 b0), the carry into x[k+2] */
+inline fn addacc3(reg u64 b1 b0, reg u64[3] x, inline int k) -> reg u64[3] {
+  reg bool cf;
+  cf, x[k % 3] += b0;
+  cf, x[(k + 1) % 3] += b1 + cf;
+  x[(k + 2) % 3] = adc_zero(x[(k + 2) % 3], cf);
+  return x;
+}
+
+/* the same with a single word */
+inline fn addacc1(reg u64 b0, reg u64[3] x, inline int k) -> reg u64[3] {
+  reg bool cf;
+  cf, x[k % 3] += b0;
+  cf, x[(k + 1) % 3] = adcs_zero(x[(k + 1) % 3], cf);
+  x[(k + 2) % 3] = adc_zero(x[(k + 2) % 3], cf);
+  return x;
+}
+
+/* r = a * b on 2*NLIMBS limbs, by product scanning */
+inline fn muln(reg u64[NLIMBS] a b) -> reg u64[2 * NLIMBS] {
+  inline int i k;
+  reg u64[2 * NLIMBS] r;
+  reg u64[3] x;
+  reg u64 hi lo;
+
+  /* the first product goes straight into the window (libjbn does the same) */
+  hi, lo = mul_wide(a[0], b[0]);
+  r[0] = lo;
+  x[1] = hi;
+  x[2] = 0;
+  x[0] = 0;
+  for k = 1 to NLIMBS {
+    for i = 0 to k + 1 {
+      hi, lo = mul_wide(a[i], b[k - i]);
+      x = addacc3(hi, lo, x, k);
+    }
+    r[k] = x[k % 3];
+    x[k % 3] = 0;
+  }
+  for k = NLIMBS to 2 * NLIMBS - 1 {
+    for i = k - NLIMBS + 1 to NLIMBS {
+      hi, lo = mul_wide(a[i], b[k - i]);
+      x = addacc3(hi, lo, x, k);
+    }
+    r[k] = x[k % 3];
+    x[k % 3] = 0;
+  }
+  r[2 * NLIMBS - 1] = x[(2 * NLIMBS - 1) % 3];
+  return r;
+}
+
+/* t / R mod N for t < N*R on 2*NLIMBS limbs: word-wise Montgomery reduction
+   consuming the words of t from the bottom; m holds the quotient words */
+inline fn rdcn(reg u64[2 * NLIMBS] t, reg ptr u64[NLIMBS + 1] nn) -> reg u64[NLIMBS] {
+  inline int i k;
+  reg u64[NLIMBS] r m;
+  reg u64[3] x;
+  reg u64 hi lo q w;
+  reg bool cf;
+
+  x[0] = 0;
+  x[1] = 0;
+  x[2] = 0;
+  for k = 0 to NLIMBS {
+    for i = 0 to k {
+      w = nn[k - i];
+      hi, lo = mul_wide(m[i], w);
+      x = addacc3(hi, lo, x, k);
+    }
+    x = addacc1(t[k], x, k);
+    w = nn[NLIMBS];                   /* ninv */
+    q = x[k % 3];
+    q *= w;
+    m[k] = q;
+    w = nn[0];
+    hi, lo = mul_wide(q, w);
+    x = addacc3(hi, lo, x, k);        /* clears x[k % 3] */
+  }
+  for k = NLIMBS to 2 * NLIMBS - 1 {
+    for i = k - NLIMBS + 1 to NLIMBS {
+      w = nn[k - i];
+      hi, lo = mul_wide(m[i], w);
+      x = addacc3(hi, lo, x, k);
+    }
+    x = addacc1(t[k], x, k);
+    r[k - NLIMBS] = x[k % 3];
+    x[k % 3] = 0;
+  }
+  /* the top word: no carry out, the value is below 2N < R */
+  cf, x[(2 * NLIMBS - 1) % 3] += t[2 * NLIMBS - 1];
+  r[NLIMBS - 1] = x[(2 * NLIMBS - 1) % 3];
+  r = csub_mod(r, nn);
+  return r;
+}
+
+/* a * b / R mod N, both below N; the result must go to fresh variables */
+inline fn mont_mul(reg u64[NLIMBS] a b, reg ptr u64[NLIMBS + 1] nn) -> reg u64[NLIMBS] {
+  reg u64[2 * NLIMBS] t;
+  reg u64[NLIMBS] r;
+  t = muln(a, b);
+  r = rdcn(t, nn);
+  return r;
+}
+
+/* r + x mod N, both below N < 2^126 (no carry out); add_mod(x, x) doubles x */
+inline fn add_mod(reg u64[NLIMBS] r x, reg ptr u64[NLIMBS + 1] nn) -> reg u64[NLIMBS] {
+  inline int i;
+  reg u64[NLIMBS] u;
+  reg bool cf;
+  u[0] = r[0];
+  cf, u[0] += x[0];
+  for i = 1 to NLIMBS {
+    u[i] = r[i];
+    cf, u[i] += x[i] + cf;
+  }
+  u = csub_mod(u, nn);
+  return u;
+}
+
+/* 1 if a^((N-1)/2) = -1 (mod N) for N = h*2^n + 1 (1 <= h, N < 2^125, 2 <= n <= 62,
+   2 <= a < 32), else 0: the witness condition of the certificate */
+inline fn proth_pass(reg u64 h n a) -> reg u64 {
+  stack u64[NLIMBS + 1] nn_s;
+  stack u64[NLIMBS] ar_s rm_s;
+  reg ptr u64[NLIMBS + 1] nn;
+  reg u64[NLIMBS] r x s q;
+  reg u64 n0 n1 v t k res zero;
+  reg bool cf;
+
+  res = 0;
+  if (h != 0) {
+    /* N = h * 2^n + 1 on two limbs: the low word is even, the +1 does not carry */
+    t = n;                               /* the shift counts go through t (RCX) */
+    n0 = h;
+    n0 = n0 << (t & 63);
+    t = 64;
+    t -= n;
+    n1 = h;
+    n1 = n1 >> (t & 63);
+    n0 += 1;
+
+    /* ninv = -n0^(-1) mod 2^64: Newton from n0 itself (n0 * n0 = 1 mod 8),
+       five steps double the correct bits to 96 */
+    v = n0;
+    k = 5;
+    while (k != 0) {
+      t = n0;
+      t *= v;
+      t = -t;
+      t += 2;
+      v *= t;
+      k -= 1;
+    }
+    v = -v;
+    nn_s[0] = n0;
+    nn_s[1] = n1;
+    nn_s[2] = v;
+    nn = nn_s;
+
+    /* R mod N: 2^64 doubled 64 times (2^64 < N when n1 != 0), else 1 doubled 128 times */
+    if (n1 != 0) {
+      r[0] = 0;
+      r[1] = 1;
+      k = 64;
+    } else {
+      r[0] = 1;
+      r[1] = 0;
+      k = 128;
+    }
+    while (k != 0) {
+      q = add_mod(r, r, nn);
+      r = q;
+      k -= 1;
+    }
+    rm_s = r;
+
+    /* the witness in Montgomery form: a * (R mod N) mod N, a < 32, by the
+       five bits of a from the top (a << 59 shifted out bit by bit) */
+    t = a;
+    t = t << 59;
+    x[0] = 0;
+    x[1] = 0;
+    k = 5;
+    while (k != 0) {
+      q = add_mod(x, x, nn);
+      x = q;
+      s = add_mod(x, r, nn);
+      cf, t += t;
+      x[0] = s[0] if cf;
+      x[1] = s[1] if cf;
+      k -= 1;
+    }
+    ar_s = x;
+
+    /* a^h: square-and-multiply over the bits of h below its top one, which
+       are shifted out of v from the top; k counts them */
+    k = top_bit(h);                      /* k = bit length - 1 */
+    t = 63;
+    t -= k;
+    v = h;
+    v = v << (t & 63);                   /* the top bit of h at bit 63 */
+    cf, v += v;                          /* drop it */
+    r = x;
+    while (k != 0) {
+      q = mont_mul(r, r, nn);
+      r = q;
+      cf, v += v;
+      if (cf) {
+        s = ar_s;
+        q = mont_mul(r, s, nn);
+        r = q;
+      }
+      k -= 1;
+    }
+
+    /* then n - 1 squarings: a^(h * 2^(n-1)) */
+    k = n;
+    k -= 1;
+    while (k != 0) {
+      q = mont_mul(r, r, nn);
+      r = q;
+      k -= 1;
+    }
+
+    /* -1 in Montgomery form is N - (R mod N): r is it iff r + (R mod N)
+       is 0 modulo N (both are below N and R mod N is not 0) */
+    x = rm_s;
+    s = add_mod(r, x, nn);
+    s[0] |= s[1];
+    zero = 0;
+    res = 1;
+    res = zero if (s[0] != 0);
+  }
+  return res;
+}

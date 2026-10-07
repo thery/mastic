@@ -1,0 +1,55 @@
+fn lzcnt (reg u64 x) -> reg u64 {
+   ?{}, x = #LZCNT(x);
+   return x;
+}
+
+export fn foo () -> reg u64 {
+  reg u64 r a;
+  a = 1 << 62;
+  r = lzcnt(a);
+  return r;
+}
+
+export fn tzcnt(reg u64 x p) -> reg u16 {
+  reg u32 y;
+  reg u16 z;
+  ?{}, x = #TZCNT([p]);
+  ?{}, x = #TZCNT(x);
+  ?{}, y = #TZCNT_32([:u32 p + 4 * x]);
+  ?{}, y = #TZCNT_32(y);
+  x = (64s)y;
+  ?{}, z = #TZCNT_16([:u16 p + 2 * x]);
+  ?{}, z = #TZCNT_16(z);
+  return z;
+}
+
+export fn bsr(reg u64 x) -> reg u16 {
+  // Enforce safety
+  x |= 1;
+
+  stack u64[1] s;
+  s[0] = x;
+
+  reg u64 a;
+  reg u32 b;
+  reg u16 c;
+
+  reg u16 r = 0;
+
+  ?{}, a = #BSR_64(x);
+  r ^= a;
+  ?{}, a = #BSR_64(s[0]);
+  r ^= a;
+
+  ?{}, b = #BSR_32(x);
+  r ^= b;
+  ?{}, b = #BSR_32(s[:u32 0]);
+  r ^= b;
+
+  ?{}, c = #BSR_16(x);
+  r ^= c;
+  ?{}, c = #BSR_16(s[:u16 0]);
+  r ^= c;
+
+  return r;
+}

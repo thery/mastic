@@ -34,11 +34,189 @@ module Recovery = struct
   type 'a env = 'a I.env
   type production = I.production
 
+  (* the names of the symbols, for debugging (MASTIC_DEBUG) *)
+  let name_of_symbol : type a. a symbol -> string = function
+    | I.T I.T_ALIGNED -> "ALIGNED"
+    | I.T I.T_AMP -> "AMP"
+    | I.T I.T_AMPAMP -> "AMPAMP"
+    | I.T I.T_ARRAYINIT -> "ARRAYINIT"
+    | I.T I.T_ASSERT -> "ASSERT"
+    | I.T I.T_BANG -> "BANG"
+    | I.T I.T_BANGEQ -> "BANGEQ"
+    | I.T I.T_COLON -> "COLON"
+    | I.T I.T_COLONCOLON -> "COLONCOLON"
+    | I.T I.T_COMMA -> "COMMA"
+    | I.T I.T_CONSTANT -> "CONSTANT"
+    | I.T I.T_DOT -> "DOT"
+    | I.T I.T_DOWNTO -> "DOWNTO"
+    | I.T I.T_ELSE -> "ELSE"
+    | I.T I.T_EOF -> "EOF"
+    | I.T I.T_EQ -> "EQ"
+    | I.T I.T_EQEQ -> "EQEQ"
+    | I.T I.T_ERROR_TOKEN -> "ERROR_TOKEN"
+    | I.T I.T_EXEC -> "EXEC"
+    | I.T I.T_EXPORT -> "EXPORT"
+    | I.T I.T_FALSE -> "FALSE"
+    | I.T I.T_FN -> "FN"
+    | I.T I.T_FOR -> "FOR"
+    | I.T I.T_FROM -> "FROM"
+    | I.T I.T_GE -> "GE"
+    | I.T I.T_GLOBAL -> "GLOBAL"
+    | I.T I.T_GT -> "GT"
+    | I.T I.T_GTGT -> "GTGT"
+    | I.T I.T_HAT -> "HAT"
+    | I.T I.T_IF -> "IF"
+    | I.T I.T_INLINE -> "INLINE"
+    | I.T I.T_INSTR_ERROR_TOKEN -> "INSTR_ERROR_TOKEN"
+    | I.T I.T_INT -> "INT"
+    | I.T I.T_ITEM_ERROR_TOKEN -> "ITEM_ERROR_TOKEN"
+    | I.T I.T_LBRACE -> "LBRACE"
+    | I.T I.T_LBRACKET -> "LBRACKET"
+    | I.T I.T_LE -> "LE"
+    | I.T I.T_LPAREN -> "LPAREN"
+    | I.T I.T_LT -> "LT"
+    | I.T I.T_LTLT -> "LTLT"
+    | I.T I.T_MINUS -> "MINUS"
+    | I.T I.T_MUTABLE -> "MUTABLE"
+    | I.T I.T_NAMESPACE -> "NAMESPACE"
+    | I.T I.T_NID -> "NID"
+    | I.T I.T_PARAM -> "PARAM"
+    | I.T I.T_PERCENT -> "PERCENT"
+    | I.T I.T_PIPE -> "PIPE"
+    | I.T I.T_PIPEPIPE -> "PIPEPIPE"
+    | I.T I.T_PLUS -> "PLUS"
+    | I.T I.T_POINTER -> "POINTER"
+    | I.T I.T_QUESTIONMARK -> "QUESTIONMARK"
+    | I.T I.T_RARROW -> "RARROW"
+    | I.T I.T_RBRACE -> "RBRACE"
+    | I.T I.T_RBRACKET -> "RBRACKET"
+    | I.T I.T_REG -> "REG"
+    | I.T I.T_REQUIRE -> "REQUIRE"
+    | I.T I.T_RETURN -> "RETURN"
+    | I.T I.T_ROL -> "ROL"
+    | I.T I.T_ROR -> "ROR"
+    | I.T I.T_RPAREN -> "RPAREN"
+    | I.T I.T_SEMICOLON -> "SEMICOLON"
+    | I.T I.T_SHARP -> "SHARP"
+    | I.T I.T_SHARPLBRACKET -> "SHARPLBRACKET"
+    | I.T I.T_SLASH -> "SLASH"
+    | I.T I.T_STACK -> "STACK"
+    | I.T I.T_STAR -> "STAR"
+    | I.T I.T_STRING -> "STRING"
+    | I.T I.T_SVSIZE -> "SVSIZE"
+    | I.T I.T_SWSIZE -> "SWSIZE"
+    | I.T I.T_TO -> "TO"
+    | I.T I.T_TRUE -> "TRUE"
+    | I.T I.T_TYPE -> "TYPE"
+    | I.T I.T_T_BOOL -> "T_BOOL"
+    | I.T I.T_T_INT -> "T_INT"
+    | I.T I.T_T_INT_CAST -> "T_INT_CAST"
+    | I.T I.T_T_W -> "T_W"
+    | I.T I.T_UNALIGNED -> "UNALIGNED"
+    | I.T I.T_UNDERSCORE -> "UNDERSCORE"
+    | I.T I.T_WHILE -> "WHILE"
+    | I.T I.T_error -> "error"
+    | I.N I.N_annot_pparamdecl -> "annot_pparamdecl"
+    | I.N I.N_annot_stor_type -> "annot_stor_type"
+    | I.N I.N_annotation -> "annotation"
+    | I.N I.N_annotationlabel -> "annotationlabel"
+    | I.N I.N_annotations -> "annotations"
+    | I.N I.N_arr_access -> "arr_access"
+    | I.N I.N_arr_access_i -> "arr_access_i"
+    | I.N I.N_arr_access_len -> "arr_access_len"
+    | I.N I.N_attribute -> "attribute"
+    | I.N I.N_call_conv -> "call_conv"
+    | I.N I.N_cast -> "cast"
+    | I.N I.N_castop -> "castop"
+    | I.N I.N_castop1 -> "castop1"
+    | I.N I.N_from -> "from"
+    | I.N I.N_implicites -> "implicites"
+    | I.N I.N_keyword -> "keyword"
+    | I.N I.N_list_loc_top__ -> "list_loc_top__"
+    | I.N I.N_list_pinstr_ -> "list_pinstr_"
+    | I.N I.N_list_top_annotation_ -> "list_top_annotation_"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_annot_pparamdecl__ -> "loption_separated_nonempty_list_COMMA_annot_pparamdecl__"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_annot_stor_type__ -> "loption_separated_nonempty_list_COMMA_annot_stor_type__"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_annotation__ -> "loption_separated_nonempty_list_COMMA_annotation__"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_pexpr__ -> "loption_separated_nonempty_list_COMMA_pexpr__"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_pexpr_noarr__ -> "loption_separated_nonempty_list_COMMA_pexpr_noarr__"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_range__ -> "loption_separated_nonempty_list_COMMA_range__"
+    | I.N I.N_loption_separated_nonempty_list_COMMA_var__ -> "loption_separated_nonempty_list_COMMA_var__"
+    | I.N I.N_module_ -> "module_"
+    | I.N I.N_nonempty_list_prequire1_ -> "nonempty_list_prequire1_"
+    | I.N I.N_option_COMMA_ -> "option_COMMA_"
+    | I.N I.N_option_DOT_ -> "option_DOT_"
+    | I.N I.N_option___anonymous_1_ -> "option___anonymous_1_"
+    | I.N I.N_option_access_type_ -> "option_access_type_"
+    | I.N I.N_option_arr_access_len_ -> "option_arr_access_len_"
+    | I.N I.N_option_attribute_ -> "option_attribute_"
+    | I.N I.N_option_call_conv_ -> "option_call_conv_"
+    | I.N I.N_option_from_ -> "option_from_"
+    | I.N I.N_option_loc_castop1__ -> "option_loc_castop1__"
+    | I.N I.N_option_pblock_ -> "option_pblock_"
+    | I.N I.N_option_pointer_ -> "option_pointer_"
+    | I.N I.N_option_prefix_IF_pexpr__ -> "option_prefix_IF_pexpr__"
+    | I.N I.N_option_prefix_RARROW_tuple_annot_stor_type___ -> "option_prefix_RARROW_tuple_annot_stor_type___"
+    | I.N I.N_option_unaligned_ -> "option_unaligned_"
+    | I.N I.N_option_writable_ -> "option_writable_"
+    | I.N I.N_pblock -> "pblock"
+    | I.N I.N_pblock_r -> "pblock_r"
+    | I.N I.N_pelse -> "pelse"
+    | I.N I.N_pelseif -> "pelseif"
+    | I.N I.N_peqop -> "peqop"
+    | I.N I.N_pexec -> "pexec"
+    | I.N I.N_pexpr -> "pexpr"
+    | I.N I.N_pexpr_noarr -> "pexpr_noarr"
+    | I.N I.N_pexpr_noarr_r_pexpr_ -> "pexpr_noarr_r_pexpr_"
+    | I.N I.N_pexpr_noarr_r_pexpr_noarr_ -> "pexpr_noarr_r_pexpr_noarr_"
+    | I.N I.N_pexpr_r -> "pexpr_r"
+    | I.N I.N_pfunbody -> "pfunbody"
+    | I.N I.N_pfundef -> "pfundef"
+    | I.N I.N_pgexpr -> "pgexpr"
+    | I.N I.N_pglobal -> "pglobal"
+    | I.N I.N_pif -> "pif"
+    | I.N I.N_pinstr -> "pinstr"
+    | I.N I.N_pinstr_r -> "pinstr_r"
+    | I.N I.N_plvalue -> "plvalue"
+    | I.N I.N_plvalue_r -> "plvalue_r"
+    | I.N I.N_plvalues -> "plvalues"
+    | I.N I.N_pointer -> "pointer"
+    | I.N I.N_pparam -> "pparam"
+    | I.N I.N_pparamdecl_empty_ -> "pparamdecl_empty_"
+    | I.N I.N_prequire -> "prequire"
+    | I.N I.N_prequire1 -> "prequire1"
+    | I.N I.N_prim -> "prim"
+    | I.N I.N_ptr -> "ptr"
+    | I.N I.N_ptype -> "ptype"
+    | I.N I.N_ptype_r -> "ptype_r"
+    | I.N I.N_range -> "range"
+    | I.N I.N_separated_nonempty_list_COLONCOLON_NID_ -> "separated_nonempty_list_COLONCOLON_NID_"
+    | I.N I.N_separated_nonempty_list_COMMA_annot_pparamdecl_ -> "separated_nonempty_list_COMMA_annot_pparamdecl_"
+    | I.N I.N_separated_nonempty_list_COMMA_annot_stor_type_ -> "separated_nonempty_list_COMMA_annot_stor_type_"
+    | I.N I.N_separated_nonempty_list_COMMA_annotation_ -> "separated_nonempty_list_COMMA_annotation_"
+    | I.N I.N_separated_nonempty_list_COMMA_loc_decl__ -> "separated_nonempty_list_COMMA_loc_decl__"
+    | I.N I.N_separated_nonempty_list_COMMA_pexpr_ -> "separated_nonempty_list_COMMA_pexpr_"
+    | I.N I.N_separated_nonempty_list_COMMA_pexpr_noarr_ -> "separated_nonempty_list_COMMA_pexpr_noarr_"
+    | I.N I.N_separated_nonempty_list_COMMA_plvalue_ -> "separated_nonempty_list_COMMA_plvalue_"
+    | I.N I.N_separated_nonempty_list_COMMA_range_ -> "separated_nonempty_list_COMMA_range_"
+    | I.N I.N_separated_nonempty_list_COMMA_var_ -> "separated_nonempty_list_COMMA_var_"
+    | I.N I.N_separated_nonempty_list_empty_var_ -> "separated_nonempty_list_empty_var_"
+    | I.N I.N_separated_nonempty_list_option_COMMA__var_ -> "separated_nonempty_list_option_COMMA__var_"
+    | I.N I.N_simple_attribute -> "simple_attribute"
+    | I.N I.N_stor_type -> "stor_type"
+    | I.N I.N_storage -> "storage"
+    | I.N I.N_struct_annot -> "struct_annot"
+    | I.N I.N_svsize -> "svsize"
+    | I.N I.N_swsize -> "swsize"
+    | I.N I.N_top -> "top"
+    | I.N I.N_top_annotation -> "top_annotation"
+    | I.N I.N_utype -> "utype"
+    | I.N I.N_utype_array -> "utype_array"
+    | I.N I.N_var -> "var"
+    | I.N I.N_writable -> "writable"
+
   let pp_symbol : type a. a option -> Format.formatter -> a symbol -> unit =
-    fun x fmt s ->
-    match x, s with
-    | Some x, I.N I.N_pexpr -> SPrinter.pp_expr fmt x
-    | _ -> Format.fprintf fmt "_"
+    fun _ fmt s -> Format.pp_print_string fmt (name_of_symbol s)
 
   (* INSTR_ERROR_TOKEN is an error that only an instruction (or an item)
      accepts, ITEM_ERROR_TOKEN one that only an item accepts: Mastic folds
@@ -46,7 +224,7 @@ module Recovery = struct
      error. When Mastic merges errors it rebuilds the token from the merged
      Mastic.Error.t, so they are marked by a piece Lex "\001" or Lex "\000",
      which survives the merges. *)
-  let item_marker = "\000"
+  let item_marker = "\000"  (* not used *)
   let instr_marker = "\001"
   let has_marker m e = List.exists (fun x -> Mastic.Error.unloc x = Mastic.Error.Lex m) e
   let match_error_token = function
@@ -66,6 +244,7 @@ module Recovery = struct
     | I.T_RPAREN -> Some (")", Parser.RPAREN)
     | I.T_RBRACKET -> Some ("]", Parser.RBRACKET)
     | I.T_RBRACE -> Some ("}", Parser.RBRACE)
+    | I.T_LBRACE -> Some ("{", Parser.LBRACE)
     | _ -> None
 
   (* -------------------------------------------------------------------- *)
@@ -164,6 +343,13 @@ module Recovery = struct
     | I.X (I.N I.N_top), 3 -> (match rhs with I.X (I.T I.T_NAMESPACE) :: _ -> true | _ -> false)
     | _ -> false
 
+  (* between two instructions of a block *)
+  let is_instr_start (lhs, rhs, _, pos) =
+    match lhs, pos with
+    | I.X (I.N I.N_list_pinstr_), 1 -> true
+    | I.X (I.N (I.N_pblock_r | I.N_pfunbody)), 1 -> true
+    | _ -> false
+
   (* -------------------------------------------------------------------- *)
   (* restart points *)
 
@@ -198,23 +384,28 @@ module Recovery = struct
     let marked m t s =
       let b = next_token.b in
       GenerateToken { s; b; e = b; t = t Mastic.Error.(mkLexError (loc m b b)) } in
-    (* finish the current item: reduce if possible, otherwise insert the
-       ";" or a closing bracket if it fits, otherwise try the "}" anyway
-       (Menhir may accept it after reductions of empty rules, that Mastic
-       does not list), then a hole for a missing expression, and finally
-       make the item an error *)
+    let instr_error () = marked instr_marker (fun x -> Parser.INSTR_ERROR_TOKEN x) "(error)" in
+    (* between two instructions of a block, or two items of a namespace *)
+    let in_block = List.exists (fun i -> is_instr_start i || is_item_start i) productions in
+    (* finish the current item (at the end of the file, or at a token that
+       begins an item): reduce if possible, otherwise insert the ";" or a
+       bracket if it fits, between two instructions close the block, then
+       try a hole for a missing expression, and finally make the current
+       instruction an error (or the item, outside a function) *)
     let finish_item () =
       match reducible_productions with
       | p :: _ -> Reduce p
       | [] ->
-      match accept Parser.[SEMICOLON; RPAREN; RBRACKET; RBRACE] with
+      match accept Parser.[SEMICOLON; RPAREN; RBRACKET; RBRACE; LBRACE] with
       | Some x -> GenerateToken x
       | None ->
-          if next_token.t <> Parser.RBRACE && generation_streak <= 2 then
-            GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }
-          else if generation_streak <= 3 then GenerateHole
-          else marked item_marker (fun x -> Parser.ITEM_ERROR_TOKEN x) "(error)" in
-    (* finish the current instruction: the same, without closing the block *)
+          if in_block then GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }
+          else if generation_streak <= 1 then GenerateHole
+          else instr_error () in
+    (* finish the current instruction (at a token that begins an
+       instruction): the same, without closing the block, and inserting
+       the ";" anyway (Menhir may accept it after reductions of empty rules,
+       that Mastic does not list) *)
     let finish_instr () =
       match reducible_productions with
       | p :: _ -> Reduce p
@@ -225,7 +416,7 @@ module Recovery = struct
           if next_token.t <> Parser.SEMICOLON && generation_streak <= 1 then
             GenerateToken { s = ";"; t = Parser.SEMICOLON; b = next_token.b; e = next_token.b }
           else if generation_streak <= 2 then GenerateHole
-          else marked instr_marker (fun x -> Parser.INSTR_ERROR_TOKEN x) "(error)" in
+          else instr_error () in
     if baseline then
       match reducible_productions with
       | p :: _ when List.exists is_expr productions -> Reduce p
@@ -258,6 +449,8 @@ let rec merge_items = function
   | ({ Location.pl_desc = PFundef f; _ } as d) :: rest ->
       { d with pl_desc = PFundef { f with pdf_body = { f.pdf_body with pdb_instr = merge_instrs f.pdf_body.pdb_instr } } }
       :: merge_items rest
+  | ({ Location.pl_desc = PFunError (e, b); _ } as d) :: rest ->
+      { d with pl_desc = PFunError (e, { b with pdb_instr = merge_instrs b.pdb_instr }) } :: merge_items rest
   | ({ Location.pl_desc = PNamespace (n, l); _ } as d) :: rest ->
       { d with pl_desc = PNamespace (n, merge_items l) } :: merge_items rest
   | d :: rest -> d :: merge_items rest

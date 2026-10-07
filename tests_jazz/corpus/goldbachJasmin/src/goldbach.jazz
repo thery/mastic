@@ -1,0 +1,589 @@
+require "erat.jazz"
+require "goldbach_tables.jazz"   // generated: GB_* params + goldbachTable / COMB / QB tables
+
+/* ============================================================================
+   Goldbach verification - "table per wheel byte" method (D), split into tiles
+   with a rolling CARRY, so that segments chain without any reprocessing.
+
+   Reminder: bit m of the bitmap <-> even number (W0 + 2m); a prime p=W0+30B+r
+   and a small prime q give the even E=p+q at bit m = 15*B + (r+q)/2; we OR the
+   table T[v] (prime residues of byte v) at bit 15*B, shifted with AVX2.
+
+   The carry
+   ---------
+   Primes at the end of a tile "spill" up to ~maskbits bits further, into the
+   evens of the NEXT tile. Rather than reprocessing those bytes (overlap), we
+   COPY that spill from the TAIL of the buffer back to its HEAD, zero the rest,
+   then stamp ONLY the new bytes. Each byte is therefore processed exactly ONCE.
+
+   Since the carry flows from one tile to the next, it also crosses SEGMENT
+   boundaries: it is enough to keep the same 'tmap' buffer from one segment to
+   the next (the sieve itself is rebuilt per segment). Hence the clean chaining.
+
+   Buffer layout (bits, origin = first byte of the current tile):
+       [ 0 .. GB_OWNBITS )         evens OWNED by the tile (to be consumed)
+       [ GB_OWNBITS .. +GB_CARRY ) spill -> carried to the head of the next tile
+   GB_OWNBITS = 15*GB_BPT and GB_CARRY are multiples of 64 (aligned bounds).
+
+   Usage
+   -----
+     tmap = tileInit(tmap);              // once only, before the first segment
+     for each segment:
+        sieve = sieve of the segment;
+        tmap, z = goldbachSegment(sieve, tmap);   // tmap PERSISTS across segments
+        // z = number of evens of the segment with no decomposition (must be 0)
+   ============================================================================ */
+
+namespace Goldbach {
+
+/* ---- tiling (aim for a buffer that fits in L1/L2) ----
+   The geometry of a run depends on its segment size and lives in Cfg
+   (Cfg::BPT, OWNWORDS, OWNBYTES, TILEBYTES, computed by cfgInit below); the
+   constants here are the maxima, which size the tile map. */
+param int GB_NTILES = 16;                          // must divide SieveBytes
+param int GB_BPT_MAX    = MaxSieveBytes / GB_NTILES;   // wheel bytes per tile
+
+/* ---- carry ---- */
+param int GB_OWNBITS_MAX   = 15 * GB_BPT_MAX;          // owned evens (multiple of 64)
+param int GB_OWNWORDS_MAX  = GB_OWNBITS_MAX / 64;
+param int GB_CARRY     = ((GB_MASKBITS + 63)/64) * 64;   // spill, multiple of 64
+param int GB_CARRYWORDS= GB_CARRY / 64;
+
+/* ---- buffer size (owned + carry + AVX margin), rounded up to 4 words ---- */
+param int GB_TILEBITS_MAX  = GB_OWNBITS_MAX + GB_CARRY + 256;
+param int GB_TILEWORDS_MAX = (((GB_TILEBITS_MAX + 63)/64 + 4*GB_CHUNKS + 3)/4)*4;
+param int GB_TILEBYTES_MAX = GB_TILEWORDS_MAX * 8; 
+
+type tile = u64[GB_TILEWORDS_MAX];
+
+/* The tile geometry of a run: the same formulas as the maxima above, on the
+   run's SieveBytes. */
+fn cfgInit(reg ptr Cfg::t cfg) -> reg ptr Cfg::t
+{
+  reg u64 bpt = cfg[Cfg::BYTES]; bpt >>= 4;              // SieveBytes / GB_NTILES
+  cfg[Cfg::BPT] = bpt;
+  reg u64 ownBits = bpt; ownBits *= 15;
+  reg u64 ownWords = ownBits; ownWords >>= 6;
+  cfg[Cfg::OWNWORDS] = ownWords;
+  reg u64 ownBytes = ownWords; ownBytes <<= 3;
+  cfg[Cfg::OWNBYTES] = ownBytes;
+  reg u64 tileWords = ownBits; tileWords += GB_CARRY + 256 + 63; tileWords >>= 6;
+  tileWords += 4 * GB_CHUNKS + 3; tileWords &= -4;
+  tileWords <<= 3;
+  cfg[Cfg::TILEBYTES] = tileWords;
+  return cfg;
+}
+
+/* ---------------------------------------------------------------------------
+   tileInit: zeroes the buffer. To be called ONCE before the first segment.
+   i : starting position in u64
+   --------------------------------------------------------------------------- */
+inline fn tileInit(reg ptr tile tmap, inline int i, reg u64 tileBytes) -> reg ptr tile
+{
+
+  inline int j;
+  for j = i to ((i + 3) / 4) * 4 {
+    tmap[:u64 j] = 0;
+  }
+  reg u256 zero;
+  zero = #set0_256();
+  reg u64 bytes = (((i + 3) / 4) * 4) * 8;
+  while (bytes < tileBytes) { tmap.[:u256 bytes] = zero; bytes += 32; }
+  return tmap;
+}
+
+/* ---------------------------------------------------------------------------
+   carryTile: carries the spill (tail) back to the head, then zeroes the rest.
+     tmap[0 .. GB_CARRYWORDS)      <- tmap[GB_OWNWORDS .. +GB_CARRYWORDS)   (spill)
+     tmap[GB_CARRYWORDS .. end)    <- 0
+   --------------------------------------------------------------------------- */
+fn carryTile(reg ptr tile tmap, reg u64 ownBytes, reg u64 tileBytes) -> reg ptr tile
+{
+  inline int i;
+  reg u256 tmpL; 
+  reg u64 tmp;
+  //   while (i < GB_CARRYWORDS) { tmp = tmap[i] = tmap[GB_OWNWORDS + i]; i += 1; }
+  for i = 0 to GB_CARRYWORDS / 4 {
+    tmpL = tmap.[:u256 ownBytes + 32 * i];
+    tmap[:u256 i] = tmpL;
+  }
+  for i = (GB_CARRYWORDS / 4) * 4 to GB_CARRYWORDS {
+    tmp = tmap.[:u64 ownBytes + 8 * i];
+    tmap[:u64 i] = tmp;
+  }
+  // while (i < GB_TILEWORDS)  { tmap[i] = 0; i += 1; }
+  tmap = tileInit(tmap, GB_CARRYWORDS, tileBytes);
+  return tmap;
+}
+
+
+/* ---------------------------------------------------------------------------
+   stampTile: stamps the wheel bytes [start, start+GB_BPT) into tmap.
+   Local base = start: the bit of a byte B is 15*(B - start); the very first byte
+   (B=start) writes at the head [0..), where the carry left the previous spill.
+   --------------------------------------------------------------------------- */
+/* Wheel byte d of a tile owns the 15 evens from bit 15*d, so it writes the tile
+   from word floor(15*d/64) with a sub-word shift of (15*d) & 63. `start` is a
+   multiple of GB_BPT, itself a multiple of 64, so both depend on d & 63 alone,
+   and since 960 = 15*64 a block of 64 wheel bytes advances the tile by exactly
+   15 words with the shift pattern repeating.
+
+   15 and 64 being coprime, those 64 positions map onto only 15 distinct words,
+   in groups of
+
+       5 4 4 5 4 4 4 5 4 4 4 5 4 4 4        (average 64/15 = 4.27)
+
+   so four or five consecutive bytes write the SAME 32*GB_CHUNKS bytes of tile.
+   A group therefore accumulates in registers - `|` being associative, the order
+   inside a group does not matter - and touches the tile once: GB_CHUNKS loads
+   and stores per group instead of that many per byte, each of which used to
+   wait for the store of the byte before it to forward.
+
+   Both `for` loops are unrolled by the compiler, so w, the shift count and the
+   word offset are immediates. That is what retires Goldbach::shiftTable:
+   pre-broadcasting the counts was the right move only while the position
+   stayed a run-time value. */
+fn stampTile(reg ptr Sieve::t sieve, reg ptr tile tmap, reg u64 start, reg u64 bpt) -> reg ptr tile
+{
+  reg ptr u64[256 * GB_STRIDE] gtab = Goldbach::goldbachTable;
+
+  reg u64 be = start; be += bpt;
+  reg u64 B = start;
+  reg u64 tw = 0;                  // byte offset of this block's first tile word
+  reg u256[GB_CHUNKS] acc;
+
+  while (B < be) {
+    inline int w, d, g;
+    for w = 0 to 15 {
+      inline int first = (64 * w + 14) / 15;             // ceil(64*w/15)
+      inline int last  = (64 * (w+1) + 14) / 15 - 1;
+      for d = first to last + 1 {
+        inline int bs = (15 * d) % 64;                   // sub-word shift
+        reg u64 v = (64u) sieve[B + d];                  // wheel byte: prime residues
+        reg u64 tb = v; tb *= (GB_STRIDE * 8);           // base byte of T[v]
+        for g = 0 to GB_CHUNKS {
+          reg u256 hi, lo;
+          hi = gtab.[:u256 tb + 8 + 32*g];
+          if (bs != 0) {                                 // bs == 0: T[v] << 0, the low half adds nothing
+            hi = #VPSLL_4u64(hi, bs);
+            lo = gtab.[:u256 tb + 32*g];
+            lo = #VPSRL_4u64(lo, 64 - bs);
+            hi |= lo;
+          }
+          if (d == first) { acc[g] = hi; } else { acc[g] |= hi; }
+        }
+      }
+      for g = 0 to GB_CHUNKS {                           // one round trip per group
+        reg u256 dst;
+        dst = tmap.[:u256 tw + 8*w + 32*g];
+        dst |= acc[g];
+        tmap.[:u256 tw + 8*w + 32*g] = dst;
+      }
+    }
+    B += 64;
+    tw += 120;                     // 15 words per block of 64 wheel bytes
+  }
+  return tmap;
+}
+param int HaloBytes = Goldbach::SieveExtra + MaxSieveBytes;
+
+namespace Halo {
+
+  type t = u8[HaloBytes];
+
+  inline fn getSieve (reg ptr t halo) -> reg ptr Sieve::t 
+  {
+     reg ptr Sieve::t sieve = halo[Goldbach::SieveExtra : MaxSieveBytes];
+     return sieve;
+  }
+
+  inline fn setSieve(reg ptr t halo, reg ptr Sieve::t sieve) -> reg ptr t 
+  { 
+    halo[Goldbach::SieveExtra : MaxSieveBytes] = sieve;
+    return halo;
+  }
+
+  // pre-condition -Goldbach::SieveExtra <=s i <s SieveBytes 
+  inline fn getByte(reg ptr t halo, reg u64 i) -> reg u64 
+  {
+    reg u64 byte;
+    byte = (64u)halo[i + Goldbach::SieveExtra];
+    return byte;
+  }
+
+  inline fn is_prime(reg ptr t halo, reg u64 i, reg u64 residue) -> reg bool
+  {
+    reg u64 byte;
+    byte = getByte(halo, i);
+    reg bool b;
+    reg u64 mask = byte; 
+    ?{"!=" = b}, mask = #AND_64(mask, residue);
+    return b;
+  } 
+
+  /* the last SieveExtra bytes of the sieve in use become the prefix */
+  inline fn report(reg ptr t halo, reg u64 sieveBytes) -> reg ptr t 
+  {
+    reg u256 tmp;
+    inline int i; 
+    for i = 0 to Goldbach::SieveExtra / 32 { 
+      tmp = halo.[:u256 sieveBytes + i * 32];
+      halo.[:u256 i * 32] = tmp;
+    }
+    return halo;
+  }
+  
+  inline fn initSegment0(reg ptr t halo) -> reg ptr t 
+  {
+    reg u256 tmp = #set0_256();
+    inline int i; 
+    for i = 0 to Goldbach::SieveExtra / 32 { 
+      halo.[:u256 i * 32] = tmp;
+    }
+    return halo;
+  }
+  
+
+}
+
+
+/* ---------------------------------------------------------------------------
+   residual_ok_prev: does the even NOT covered by the stamp, at local position
+   'm' of the tile based at 'start', decompose as p + q with p a prime of the
+   sieve and q a prime in (GB_QMASK, GB_QBIG_MAX]?  Returns 1 if so, 0 otherwise.
+
+   E - W0 = 30*eq + er (eq,er computed once); q = 30*qd + qr (in QB, packed as
+   (qd<<3)|qi with qi=idx_of[qr]).  COMB[er/2 * 8 + qi] gives:
+     - byte 1 (high): the byte MASK of the residue of p = (er - qr) mod 30;
+     - byte 0 (low) : the BORROW (er < qr) to subtract from the byte B = eq - qd.
+   If B < 0, p lies in the PREVIOUS segment: its byte there is B + SieveBytes
+   (the u64 wrap-around of (B + SieveBytes) directly yields the right index).
+   --------------------------------------------------------------------------- */
+inline fn decomposeComb(reg u64 comp) -> reg u64, reg u64 
+{
+  reg u64 borrow = comp; borrow >>= 8;
+  reg u64 mask = comp; mask &= (1<<8) - 1;
+  return borrow, mask;
+}
+
+fn checkResidual(reg u64 start, reg u64 m, reg ptr Halo::t halo) -> reg u64
+{
+  reg ptr u16[15*8]      comb = Goldbach::COMB;
+  reg ptr u16[Goldbach::GB_NQBIG]  qbt  = Goldbach::QB;
+
+  reg u64 EE = start; EE *= 30; EE += m; EE += m;                // EE = 30*start + 2*m  (= E - W0)
+  reg u64 eq, er;
+  eq, er = udiveucl_64_imm(EE, 30);   // EE = eq * 30 + er
+  reg u64 rowbase = er; rowbase >>= 1; rowbase <<= 3;   // (er/2) * 8
+
+  reg u64 found = -1;
+  reg u64 k = 0;
+  reg u64 nqBIG = Goldbach::GB_NQBIG;
+
+  while (k < Goldbach::GB_NQBIG) {
+    reg u64 qv = (64u) qbt[k];
+    reg u64 qd, qi;
+    qd, qi = Goldbach::decompose(qv);           // qd = q/30, qi = idx_of[q%30]
+
+    reg u64 bo = rowbase; bo += qi;             // byte of COMB[rowbase+qi]
+    reg u64 comb_ = (64u) comb[bo];
+    reg u64 borrow, residue;
+    borrow, residue = decomposeComb(comb_);
+    reg u64 B = eq; B -= qd; B -= borrow;        // byte of p (relative to W0)
+    reg bool isprime;
+    isprime = Halo::is_prime(halo, B, residue);
+    found = k if isprime;
+    k = nqBIG if isprime;
+    k += 1;
+  }
+  return found;
+}
+    
+/* ---------------------------------------------------------------------------
+   goldbachSegment: walks the tiles (carry + stamp), then for each even NOT
+   covered by the stamp tries to resolve it with a large prime (residual_ok_prev,
+   using the current sieve 'sieve' and the previous one 'prev').
+   Returns (tmap, number of evens with no decomposition at all) - must be 0.
+   'tmap' PERSISTS across segments (carry); 'prev' is the sieve of the previous
+   segment (pass a zeroed sieve for the very first segment).
+   --------------------------------------------------------------------------- */
+/* segmentLow is the first integer of the segment the halo stands for; an even
+   at local position pos of the segment is E = segmentLow + 2*pos.  Only the
+   evens of the closed range [lo, hi] are counted in numErrors: the segments
+   at both ends of a run are sieved whole, and this is where the run's own
+   bounds cut them.  The check sits in the error branch alone, which is never
+   taken, so the scan pays nothing for it. */
+inline fn goldbachSegment(reg ptr Halo::t halo, reg ptr tile tmap,
+                          stack u64 segmentLow, stack u64 lo, stack u64 hi,
+                          stack u64 numErrors, stack u64 numResiduals, stack u64 maxQi, stack u64 maxPair,
+                          reg ptr Cfg::t cfg)
+   -> reg ptr tile, stack u64, stack u64, stack u64, stack u64
+{
+  /* Every field the loop needs is copied to the stack here, so that cfg is
+     dead inside the loop: kept in a register across it, it was the one
+     register too many for checkResidual's division. */
+  stack u64 sieveBytes = cfg[Cfg::BYTES];
+  stack u64 ownWords = cfg[Cfg::OWNWORDS];
+  stack u64 bpt = cfg[Cfg::BPT];
+  stack u64 ownBytes_s = cfg[Cfg::OWNBYTES];
+  stack u64 tileBytes_s = cfg[Cfg::TILEBYTES];
+  reg u64 start = 0;
+  while (start < sieveBytes) {
+    reg u64 ownBytes = ownBytes_s;
+    reg u64 tileBytes = tileBytes_s;
+    tmap = carryTile(tmap, ownBytes, tileBytes);  // carry from the previous tile
+    reg ptr Sieve::t sieve = Halo::getSieve(halo);
+    reg u64 bpt_r = bpt;
+    tmap = stampTile(sieve, tmap, start, bpt_r);   // couvre q <= GB_QMASK
+
+    // residual resolution: scan the 0 bits of the owned area
+    reg u64 w = 0;
+    while (w < ownWords) {
+      reg u64 nx = tmap[w];            // 0 bits = uncovered evens
+
+      /* About one word in 750 near 4e18: the stamp covers the rest, so the
+         whole residual resolution - a nested loop - leaves the scan, which is
+         then just a load, a compare and an increment. Measured from the
+         "even numbers needing residual" counter: 5264 evens out of 251.7e6,
+         scattered over words of 64 evens. */
+      #[unlikely]
+      if (nx != -1) {    
+        nx = !nx;                        // 1 bits = uncovered evens
+        #spill(tmap);
+        reg bool zf;
+        while {
+          reg u64 b;
+          ?{}, b = #TZCNT_64(nx);                  // index of the lowest 1 bit
+          reg u64 mbit = w; mbit <<= 6; mbit += b; // local position within the tile
+          reg u64 found = checkResidual(start, mbit, halo);
+          numResiduals += 1;
+          /* A counter-example to Goldbach. Never taken, so far. */
+          #[unlikely]
+          if (found == -1) {                        // no decomposition at all (counter-example!)
+            mbit = w; mbit <<= 6;
+            ?{}, b = #TZCNT_64(nx);
+            mbit += b;
+            reg u64 ee = start; ee *= 15; ee += mbit;  // (E - segmentLow)/2
+            ee <<= 1;
+            reg u64 segmentLow_r = segmentLow;
+            ee += segmentLow_r;                        // E itself
+            /* E is one of the run's: at or above lo, at or below hi, and not
+               a position past 2^64 of a partial last segment, where the sum
+               above wraps below segmentLow (those positions carry no number
+               and are never valid). */
+            if (segmentLow_r <= ee) {
+              reg u64 lo_r = lo;
+              if (lo_r <= ee) {
+                reg u64 hi_r = hi;
+                if (ee <= hi_r) { numErrors += 1; }
+              }
+            }
+          }
+          else {
+            /* A running maximum: taken a handful of times, then never. */
+            #[unlikely]
+            if ( found >s maxQi ) {
+              maxQi = found;                        // largest QB index used
+              mbit = w; mbit <<= 6; 
+              ?{}, b = #TZCNT_64(nx);                  // index of the lowest 1 bit
+              mbit += b;
+              reg u64 pos = start; pos *= 15; pos += mbit;  // (E - W0_segment)/2: position of the even
+              pos <<= 1;
+              reg u64 segmentLow_r = segmentLow;
+              pos += segmentLow_r; 
+              maxPair = pos;
+            }
+          }
+      
+          reg u64 low = nx; low -= 1; ?{ZF=zf}, nx = #AND_64(nx, low);   // clear the low bit
+        } (!zf)
+        #unspill(tmap);
+      }
+      w += 1;
+    }
+    start += bpt;
+  }
+
+  return tmap, numErrors, numResiduals, maxQi, maxPair;
+}
+
+/* ---- exported wrappers (for testing from C) ---- */
+// Sizes needed on the C side (nothing hard-coded, robust to a change of GB_CHUNKS).
+export fn goldbachParams(reg ptr u64[4] p) -> reg ptr u64[4]
+{
+  reg u64 t;
+  t = GB_TILEWORDS_MAX;     p[0] = t;   // size of tmap (in u64), for the largest segment
+  t = Goldbach::SieveExtra; p[1] = t;   // halo prefix (in bytes)
+  t = GB_MAXQ;              p[2] = t;   // bound on the qi primes tested automatically
+  t = GB_CHUNKS;            p[3] = t;   // number of CHUNKS
+  return p;
+}
+/* goldbach: verifies every even E of the CLOSED range [lo, hi] and returns the
+   number of them with no decomposition (must be 0).  Pre: lo <= hi.
+   stats[3] carries log2SieveBytes IN and stats[2] the pool's size M in buckets
+   IN (an export takes at most six arguments); pool is a block of M >= 3
+   buckets (M * Bucket::bucketBytes bytes).  stats[0..2] are OUT, written at
+   the end.  When the block is too small for the run, eratInit says so and
+   goldbach returns 2^64 - 1, a value no count of errors reaches, without
+   sieving, and leaves stats as it was given; the need and the capacity, in
+   words, are then in words 1 and 2 of the block's last bucket (memory.jazz;
+   MemoryPoolBuckets is the default, enough for every run).
+
+   The sieve works by whole segments of SieveSpan integers: the run covers the
+   segments from the one holding lo to the one holding hi, and goldbachSegment
+   drops the evens of those two that fall outside [lo, hi]. */
+export fn goldbach(reg ptr u64[4] stats,
+                   reg ptr Halo::t halo,
+                   reg ptr tile tmap, 
+                   reg Bucket::bucketPtr pool,
+                   reg u64 lo,
+                   reg u64 hi) ->
+       reg ptr u64[4], reg ptr Halo::t, reg ptr tile, reg u64
+{
+  stack u64 lo_s = lo;
+  stack u64 hi_s = hi;
+  stack Cfg::t cfg;
+  reg u64 log2SieveBytes = stats[3];
+  #spill(stats, halo, tmap, pool, lo, hi);
+  cfg = Cfg::init(cfg, log2SieveBytes, hi);
+  cfg = cfgInit(cfg);
+  #unspill(stats, halo, tmap, pool, lo, hi);
+  reg u64 poolBuckets = stats[2];
+  cfg[Cfg::POOLBUCKETS] = poolBuckets;
+  /* the pool's budget (poolRoom, erat.jazz): 0 when the chains' fixed part
+     alone does not fit, and then no run */
+  stack ptr Halo::t halo_s = halo;
+  stack ptr tile tmap_s = tmap; 
+  reg u64 room0;
+  _, _, room0 = poolRoom(cfg);
+  stack u64 numErrors;
+  if (room0 == 0) {
+    numErrors = -1;                         // the pool is too small: no run
+  } else {
+  reg u64 k = cfg[Cfg::LOG2];
+  /* the run, in segments: [segmentLow, segmentLow + numSegments) */
+  reg u64 segmentLow = Cfg::divSpan(lo, k);
+  reg u64 numSegments = Cfg::divSpan(hi, k);
+  numSegments -= segmentLow;
+  numSegments += 1;
+
+  stack EratSmall::SmallMem::t smallMem;
+  stack EratMedium::MediumMem::t mediumMem;
+  stack EratBig::BigMem::t bigMem;
+  reg Primes::primePtr primes;
+  reg ptr Sieve::t sieve;
+
+  #spill(stats);
+
+  stack u64 numSegments_s = numSegments;
+  
+  #spill(segmentLow);
+  sieve = Halo::getSieve(halo_s);
+  reg Primes::primePtr primesEnd;
+  reg u64 ok;
+  smallMem, mediumMem, bigMem, sieve, pool, primes, primesEnd, ok
+    = eratInit(smallMem, mediumMem, bigMem, sieve, pool, segmentLow, cfg);
+  halo_s = Halo::setSieve(halo_s, sieve);
+  if (ok == 0) {
+    numErrors = -1;                         // the pool is too small: no run
+  } else {
+  /* the end of the list of primes: fixed once eratInit is done, and what tells
+     the consumers where the last bucket stops */
+  stack Primes::primePtr primesEnd_s = primesEnd;
+  #unspill(segmentLow);
+  segmentLow *= cfg[Cfg::SPAN];
+
+  reg u64 tileBytes = cfg[Cfg::TILEBYTES];
+  tmap_s = tileInit(tmap_s, 0, tileBytes);
+  if (segmentLow == 0) { 
+    #spill(pool, primes);
+    smallMem = EratSmall::reInit(smallMem, segmentLow);
+    #unspill(pool, primes);
+    halo_s = Halo::initSegment0(halo_s);
+    reg ptr tile t = tmap_s;      // (the pointer to tmap)
+    reg u64 v = 0x1f;             // bits 0..4  (E = 0,2,4,6,8)
+    reg u64 ownBytes = cfg[Cfg::OWNBYTES];
+    t.[:u64 ownBytes] = v;        // carry word -> becomes tmap[0] at the next carryTile
+    tmap_s = t;
+  } else {
+    segmentLow -= cfg[Cfg::SPAN];
+    #spill(pool, primes);
+    smallMem = EratSmall::reInit(smallMem, segmentLow);
+    #unspill(pool, primes);
+    sieve = Halo::getSieve(halo_s);
+    smallMem, mediumMem, bigMem, sieve, pool, primes, segmentLow = 
+      eratSegment(smallMem, mediumMem, bigMem, sieve, pool, primes, primesEnd_s, segmentLow, cfg);
+    reg u64 bpt = cfg[Cfg::BPT];
+    reg u64 start = cfg[Cfg::BYTES]; start -= bpt;
+    tmap_s = stampTile(sieve, tmap_s, start, bpt);   
+    halo_s = Halo::setSieve(halo_s, sieve);
+    reg u64 sieveBytes = cfg[Cfg::BYTES];
+    halo_s = Halo::report(halo_s, sieveBytes);
+  }
+
+  numErrors = 0; 
+  stack u64 numResiduals = 0; 
+  stack u64 maxQi = -1;
+  stack u64 maxPair = 0;
+
+  while(numSegments_s > 0) {
+
+    // Performs the sieve
+    sieve = Halo::getSieve(halo_s);
+    smallMem, mediumMem, bigMem, sieve, pool, primes, segmentLow = 
+      eratSegment(smallMem, mediumMem, bigMem, sieve, pool, primes, primesEnd_s, segmentLow, cfg); 
+    halo_s = Halo::setSieve(halo_s, sieve);
+
+    // Check even goldbach 
+    #spill(pool, primes, segmentLow);
+    halo = halo_s;
+    /* eratSegment has moved segmentLow one span up: the segment just sieved,
+       the one the halo stands for, starts one span below */
+    reg u64 low = segmentLow; low -= cfg[Cfg::SPAN];
+    stack u64 low_s = low;
+    tmap_s, numErrors, numResiduals, maxQi, maxPair = goldbachSegment(halo, tmap_s, low_s, lo_s, hi_s, numErrors, numResiduals, maxQi, maxPair, cfg);
+    reg u64 sieveBytes = cfg[Cfg::BYTES];
+    halo_s = Halo::report(halo, sieveBytes);
+    #unspill(pool, primes, segmentLow);
+
+    numSegments_s -= 1;
+  }
+
+  if (numErrors == 0) { 
+    reg ptr u16[Goldbach::GB_NQBIG] qbt  = Goldbach::QB;
+    reg u64 t = maxQi;
+    if (t != -1) {
+      reg u64 qv = (64u) qbt[t];
+      reg u64 qd, qi;
+      qd, qi = Goldbach::decompose(qv);     // qd = q/30, qi = idx_of[q%30]
+      t = qd; t *= 30;
+      reg ptr Wheel30::RESIDUES_t residues = Wheel30::RESIDUES; 
+      qi = (64u)residues[qi];
+      t += qi;
+      #unspill(stats);
+      stats[0] = t;      // largest QB prime used over the whole run
+      t = maxPair; stats[1] = t;      // value of the corresponding even
+      t = numResiduals; stats[2] = t; // number of evens needing a Qi larger than GB_MAXQ
+    } else {
+      #unspill(stats);
+      stats[0] = GB_MAXQ;    // no residual: the stamp covered everything (q <= GB_MAXQ)
+      stats[1] = 0;
+      stats[2] = 0;
+    }
+  } else {
+    #unspill(stats); 
+    stats[0] = 0;
+    stats[1] = 0;
+    stats[2] = 0;
+  }
+  }
+  }
+
+  halo = halo_s; 
+  tmap = tmap_s; 
+  reg u64 numErrors_r = numErrors;
+  return stats, halo, tmap, numErrors_r;
+     
+}
+
+}

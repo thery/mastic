@@ -1,0 +1,9 @@
+#[ct="secret * public -> public"]
+fn add_H_L_L(reg u64 x, reg u64 ya) -> reg u64 {
+
+ reg u64 t;
+
+ t = x + ya;
+
+ return t;
+}

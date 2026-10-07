@@ -8,5 +8,5 @@
 (ocamllex (modules lexer))
 
 (menhir
- (flags --table --explain --inspection)
+ (flags --table --explain --inspection --canonical)
  (modules parser))

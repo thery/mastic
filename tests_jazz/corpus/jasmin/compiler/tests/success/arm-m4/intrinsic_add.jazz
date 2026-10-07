@@ -1,0 +1,104 @@
+export
+fn add(reg u32 arg0, reg u32 arg1) -> reg u32 {
+    reg u32 x;
+    reg bool nf, zf, vf, cf;
+
+    // Registers.
+    x = #ADD(arg0, arg1);
+    [x] = x;
+
+    // Immediates.
+    x = #ADD(arg0, 1);
+    [x] = x;
+    x = #ADD(arg0, -1);
+    x = #ADD(x, 0xcacacaca); // `bbbb` pattern.
+    x = #ADD(x, 0xca00ca00); // `b0b0` pattern.
+    x = #ADD(x, 0x00ca00ca); // `0b0b` pattern.
+    x = #ADD(x, 0x000cb000); // Shifted.
+    x = #ADD(x, 0x00000aca); // W-encoding of 12-bits.
+    [x] = x;
+
+    // Shifts.
+    x = #ADD(arg0, arg1 << 0);
+    [x] = x;
+    x = #ADD(arg0, arg1 << 1);
+    [x] = x;
+    x = #ADD(arg0, arg1 << 31);
+    [x] = x;
+    x = #ADD(arg0, arg1 >> 1);
+    [x] = x;
+    x = #ADD(arg0, arg1 >> 31);
+    [x] = x;
+    x = #ADD(arg0, arg1 >>s 1);
+    [x] = x;
+    x = #ADD(arg0, arg1 >>s 31);
+    [x] = x;
+    x = #ADD(arg0, arg1 >>r 1);
+    [x] = x;
+    x = #ADD(arg0, arg1 >>r 31);
+    [x] = x;
+
+    // Set flags.
+    nf, zf, cf, vf, x = #ADDS(x, arg0);
+
+    // Conditionals.
+
+    // EQ
+    x = #ADDcc(arg0, arg1, zf, x);
+    // NE
+    x = #ADDcc(arg0, arg1, !zf, x);
+    // CS
+    x = #ADDcc(arg0, arg1, cf, x);
+    // CC
+    x = #ADDcc(arg0, arg1, !cf, x);
+    // MI
+    x = #ADDcc(arg0, arg1, nf, x);
+    // PL
+    x = #ADDcc(arg0, arg1, !nf, x);
+    // VS
+    x = #ADDcc(arg0, arg1, vf, x);
+    // VC
+    x = #ADDcc(arg0, arg1, !vf, x);
+    // HI
+    x = #ADDcc(arg0, arg1, cf && !zf, x);
+    // LS
+    x = #ADDcc(arg0, arg1, !cf || zf, x);
+    // GE
+    x = #ADDcc(arg0, arg1, nf == vf, x);
+    // LT
+    x = #ADDcc(arg0, arg1, nf != vf, x);
+    // GT
+    x = #ADDcc(arg0, arg1, !zf && nf == vf, x);
+    // LE
+    x = #ADDcc(arg0, arg1, zf || nf != vf, x);
+
+    // Combinations.
+    nf, zf, cf, vf, x = #ADDScc(x, arg0, nf == vf, nf, zf, cf, vf, x);
+    nf, zf, cf, vf, x = #ADDS(x, 2);
+    ?{}, x = #ADDS(x, 0xcacacaca);
+    ?{}, x = #ADDS(x, 0xca00ca00);
+    ?{}, x = #ADDS(x, 0x00ca00ca);
+    ?{}, x = #ADDS(x, 0x00cb0000);
+    nf, zf, cf, vf, x = #ADDS(x, arg0 << 3);
+    nf, zf, cf, vf, x = #ADDS(x, arg0 >> 3);
+    nf, zf, cf, vf, x = #ADDS(x, arg0 >>s 3);
+    nf, zf, cf, vf, x = #ADDS(x, arg0 >>r 3);
+    nf, zf, cf, vf, x = #ADDScc(x, 2, nf == vf, nf, zf, cf, vf, x);
+    nf, zf, cf, vf, x = #ADDScc(x, arg0 << 3, nf == vf, nf, zf, cf, vf, x);
+    nf, zf, cf, vf, x = #ADDScc(x, arg0 << 3, !!(nf == vf), nf, zf, cf, vf, x);
+    nf, zf, cf, vf, x = #ADDScc(x, arg0 >> 3, nf == vf, nf, zf, cf, vf, x);
+    nf, zf, cf, vf, x = #ADDScc(x, arg0 >>s 3, nf == vf, nf, zf, cf, vf, x);
+    nf, zf, cf, vf, x = #ADDScc(x, arg0 >>r 3, nf == vf, nf, zf, cf, vf, x);
+    x = #ADDcc(x, arg0, !!!!zf, x);
+    x = #ADDcc(x, 2, zf, x);
+    x = #ADDcc(x, 2, !!zf, x);
+    x = #ADDcc(x, arg0 << 3, zf, x);
+    x = #ADDcc(x, arg0 << 3, !!zf, x);
+    x = #ADDcc(x, arg0 >> 3, zf, x);
+    x = #ADDcc(x, arg0 >>s 3, zf, x);
+    x = #ADDcc(x, arg0 >>r 3, zf, x);
+
+    reg u32 res;
+    res = x;
+    return res;
+}

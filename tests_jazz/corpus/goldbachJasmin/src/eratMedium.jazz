@@ -1,0 +1,183 @@
+require "math.jazz"
+require "wheel30.jazz"
+require "memory.jazz"
+require "sieve.jazz"
+require "crossoffw.jazz"
+
+namespace EratMedium {
+
+namespace MediumMem { 
+  param int MediumMemSize = 64 + 8;
+  type t = Bucket::sievingPrimePtr[MediumMemSize];
+
+  
+  fn init(reg Bucket::bucketPtr pool, reg ptr t mem) -> reg Bucket::bucketPtr, reg ptr t 
+  {
+    /* Null, not a bucket: see EratBig::BigMem::init. */
+    reg u64 i = 0;    
+    while (i < 64) {
+      mem[i] = Null;
+      i += 1;
+    }
+    return pool, mem;
+  }
+    
+  inline fn getEnd(reg ptr t mem, reg u64 wheelIndex) -> reg Bucket::sievingPrimePtr 
+  { 
+    reg Bucket::sievingPrimePtr end = mem[wheelIndex];
+    return end;
+  }
+
+  inline fn storeSievingPrime (reg Bucket::bucketPtr pool, 
+                  reg ptr t mem, reg u64 sievePrime, reg u64 multipleIndex, reg u64 wheelIndex) -> 
+    reg Bucket::bucketPtr, reg ptr t 
+  {
+    reg Bucket::sievingPrimePtr end;
+    reg SievingPrime::t sievingPrime;
+    sievingPrime = SievingPrime::sievingPrime(sievePrime, multipleIndex, wheelIndex);
+    end = getEnd(mem, wheelIndex);
+    pool, end = MemoryPool::storeSievingPrime(pool, end, sievingPrime);
+    mem[wheelIndex] = end;
+    return pool, mem;
+  }
+
+  // Pre : wheelIndex is a multiple of 8
+  fn moveExtras (reg Bucket::bucketPtr pool, reg ptr t mem, reg u64 wheelIndex) -> 
+    reg Bucket::bucketPtr, reg ptr t 
+  {
+    inline int i;
+    for i = 0 to 8 {
+      reg u64 end;
+      end = mem[wheelIndex + i];
+      mem[64 + i] = end;
+      /* Null rather than a fresh bucket: the next store allocates. */
+      mem[wheelIndex + i] = Null;
+    } 
+    return pool, mem;
+  } 
+
+  inline fn getExtra(reg ptr t mem, inline int i) -> reg Bucket::sievingPrimePtr 
+  {
+     reg Bucket::sievingPrimePtr extra;
+     extra = mem[64 + i];
+     return extra;
+  } 
+
+  inline fn getExtraR(reg ptr t mem, reg u64 i) -> reg Bucket::sievingPrimePtr 
+  {
+     reg Bucket::sievingPrimePtr extra;
+     extra = mem[64 + i];
+     return extra;
+  } 
+
+  fn free(reg Bucket::bucketPtr pool, reg ptr t mem) -> reg Bucket::bucketPtr, reg ptr t 
+  {
+    /* Walk each chain to its end, freeing every bucket, and leave Null behind.
+       No bucket is kept: the next store allocates one. */
+    reg u64 wheelIndex = 0;
+    while(wheelIndex < 64) {
+      reg Bucket::sievingPrimePtr end;
+      reg Bucket::bucketPtr bucket;
+      end = getEnd(mem, wheelIndex);
+      while (end != Null) {
+        bucket = Bucket::bucketOf(end);
+        end = Bucket::getNext(bucket);
+        pool = MemoryPool::freeBucket(pool, bucket);
+      }       
+      mem[wheelIndex] = Null;
+      wheelIndex += 1;      
+    }
+    return pool, mem;
+  }
+
+}
+
+/* Provides 
+fn eratMedium(reg Bucket::bucketPtr pool, reg ptr Sieve::t seg, reg ptr MediumMem::t mem) ->
+   reg Bucket::bucketPtr, reg ptr Sieve::t, reg ptr MediumMem::t
+*/
+require "eratMedium_aux.jazz"
+inline fn addPrimesAux(reg Bucket::bucketPtr pool, reg ptr MediumMem::t mem, reg Primes::primePtr primes, reg Primes::primePtr end, reg u64 segmentLow, reg u64 maxEratMedium_r, reg u64 sieveSpan_r, inline bool clear) -> 
+   reg Bucket::bucketPtr, reg ptr MediumMem::t, reg Bucket::bucketPtr
+{
+  if (primes != Null) {       
+    stack Primes::primePtr lastPrime = Null; 
+    reg Primes::primePtr end_cur = Primes::endOf(end, primes);
+    reg ptr Wheel30::RESIDUES_t residues = Wheel30::RESIDUES; 
+    stack u64 maxEratMedium = maxEratMedium_r;
+    stack u64 sieveSpan = sieveSpan_r;
+    
+    while {   
+      reg u64 sievePrime, r, rc, multiple, multipleIndex, qwheelIndex, wheelIndex;  
+      sievePrime, r = Primes::decompose(primes);
+      rc = (64u)residues[r];
+      reg u64 prime = sievePrime; prime *= 30; prime += rc;
+      if (prime <= maxEratMedium) {
+        reg bool overflow;
+        multiple, qwheelIndex, overflow = Wheel30::firstMultipleOv(sievePrime, rc, segmentLow);
+        /* No wheel multiple of the prime below 2^64: nothing to store, the
+           prime is dropped and the queue moves on. */
+        #[unlikely]
+        if (overflow) {
+          pool, primes, end_cur = Primes::nextPrime(pool, primes, end, end_cur, clear);
+        } else {
+          multiple -= segmentLow;
+          if (multiple < sieveSpan) {
+            multipleIndex = udiv_64_imm(multiple, Wheel30::WHEEL);
+            // wheelIndex = r * Wheel30::NRES + qwheelIndex
+            wheelIndex = r; wheelIndex <<= 3; wheelIndex += qwheelIndex;
+            pool, mem = MediumMem::storeSievingPrime(pool, mem, sievePrime, multipleIndex, wheelIndex);
+            pool, primes, end_cur = Primes::nextPrime(pool, primes, end, end_cur, clear);
+          } else {
+            lastPrime = primes;
+            primes = Null;
+          }
+        }
+      } else {
+        lastPrime = primes;
+        primes = Null;
+      } 
+    } (primes != Null)  
+    primes = lastPrime;
+  } 
+  return pool, mem, primes;
+} 
+
+#[stable_call_conv = {reg = 14, flag}]
+fn addPrimesNoClear(reg Bucket::bucketPtr pool, reg ptr MediumMem::t mem, reg Primes::primePtr primes, reg Primes::primePtr end, reg u64 segmentLow, reg u64 maxEratMedium, reg u64 sieveSpan) -> 
+   reg Bucket::bucketPtr, reg ptr MediumMem::t, reg Bucket::bucketPtr
+{
+  pool = pool; mem = mem; primes = primes;
+  pool, mem, primes = addPrimesAux(pool, mem, primes, end, segmentLow, maxEratMedium, sieveSpan, Primes::NOCLEAR); 
+  pool = pool; mem = mem; primes = primes;
+  return pool, mem, primes;
+}
+
+#[stable_call_conv = {reg = 14, flag}]
+fn addPrimesClear(reg Bucket::bucketPtr pool, reg ptr MediumMem::t mem, reg Primes::primePtr primes, reg Primes::primePtr end, reg u64 segmentLow, reg u64 maxEratMedium, reg u64 sieveSpan) -> 
+   reg Bucket::bucketPtr, reg ptr MediumMem::t, reg Bucket::bucketPtr
+{
+  pool = pool; mem = mem; primes = primes; 
+  pool, mem, primes = addPrimesAux(pool, mem, primes, end, segmentLow, maxEratMedium, sieveSpan, Primes::CLEAR); 
+  pool = pool; mem = mem; primes = primes;
+  return pool, mem, primes;
+}
+
+inline fn addPrimes(reg Bucket::bucketPtr pool, reg ptr MediumMem::t mem, reg Primes::primePtr primes, reg Primes::primePtr end, reg u64 segmentLow, reg ptr Cfg::t cfg, inline bool clear) -> 
+   reg Bucket::bucketPtr, reg ptr MediumMem::t, reg Bucket::bucketPtr 
+{
+   pool = pool; mem = mem; primes = primes; end = end; segmentLow = segmentLow;
+   reg u64 maxEratMedium = cfg[Cfg::MAXMEDIUM];
+   reg u64 sieveSpan = cfg[Cfg::SPAN];
+   if (clear) {
+     pool, mem, primes = addPrimesClear(pool, mem, primes, end, segmentLow, maxEratMedium, sieveSpan); 
+   } else {  
+     pool, mem, primes = addPrimesNoClear(pool, mem, primes, end, segmentLow, maxEratMedium, sieveSpan); 
+   }
+   pool = pool; mem = mem; primes = primes;
+   return pool, mem, primes;    
+}
+} // EratMedium
+
+
+       

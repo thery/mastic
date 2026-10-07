@@ -1,0 +1,5 @@
+
+type arch_size = u64;
+
+#[stackzero=loop, stackzerosize=arch_size]
+export fn main1(reg u64 p) { }

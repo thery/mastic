@@ -1,0 +1,94 @@
+/* ********************************************************* */
+/* Initialization of the prime list                          */
+/// Each SievingPrime object contains a sieving prime and the
+/// position of its next multiple inside the sieve array i.e.
+/// multipleIndex and a wheelIndex. In order to reduce the memory
+/// usage the multipleIndex and wheelIndex are packed into a
+/// single 32-bit variable.
+
+/* struct
+   u32 sievingPrime;    /* p / 30 */
+   u23 multipleIndex;   /* byte offset of next multiple, RELATIVE to segment */
+   u9  wheelIndex;      /* 0..63 */
+*/
+
+namespace SievingPrime {
+
+  type t = u64;
+
+  /* Widths of the two packed fields of the low half: the word is
+       (sievePrime << 32) | (multipleIndex << wheelIndexBits) | wheelIndex
+     WheelElem relies on wheelIndexBits, see the comment there. */
+  param int wheelIndexBits     = 32 - 23;
+  param int multipleIndexBits  = 23;
+
+  inline fn sievePrime(reg t sievingPrime) -> reg u64 
+  { 
+    reg u64 sp = sievingPrime; sp >>u= 32;
+    return sp;
+  } 
+
+  inline fn multipleIndex(reg t sievingPrime) -> reg u64 
+  {
+    reg u64 tmp = sievingPrime;
+    ?{}, tmp = (64u)#SHR_32(tmp, 32 - 23); 
+    return tmp; 
+
+  } 
+
+  inline fn wheelIndex(reg t sievingPrime) -> reg u64 
+  {
+    reg u64 wi = sievingPrime;
+    wi &= (1 << 32 - 23) - 1;
+    return wi;
+  }
+
+  inline fn decompose(reg t sievingPrime) -> 
+     reg u64, reg u64, reg u64 
+  { 
+     reg u64 sievePrime, multipleIndex, wheelIndex;
+     sievePrime = sievePrime(sievingPrime);
+     multipleIndex = multipleIndex(sievingPrime);
+     wheelIndex = wheelIndex(sievingPrime);
+     return sievePrime, multipleIndex, wheelIndex;
+  }
+
+  /* Assemble from the low half already packed, i.e. from
+       (multipleIndex << wheelIndexBits) | wheelIndex.
+     EratBig::crossOff builds that value directly, without ever holding
+     multipleIndex and wheelIndex apart. */
+  inline fn fromLow (reg u64 sievePrime, reg u64 low) -> reg t
+  {
+    reg t sievingPrime = sievePrime; sievingPrime <<= 32;
+    sievingPrime |= low;
+    return sievingPrime;
+  }
+
+  inline fn sievingPrime (reg u64 sievePrime, reg u64 multipleIndex, reg u64 wheelIndex) -> reg t 
+  {
+    reg t sievingPrime; 
+    sievingPrime = sievePrime; sievingPrime <<= 32;
+    sievingPrime |= wheelIndex;
+    reg u64 tmp;
+    tmp = multipleIndex; tmp <<= 32 - 23;
+    sievingPrime |= tmp; 
+    return sievingPrime;
+  }
+/*
+  export fn sievingPrime_export(reg u64 sievePrime, reg u64 multipleIndex, reg u64 wheelIndex) -> reg t 
+  {
+    reg t sievingPrime; 
+    sievingPrime = sievingPrime(sievePrime, multipleIndex, wheelIndex);
+    return sievingPrime;
+  }
+
+  export fn decompose_export(reg ptr u64[3] pout, reg t sievingPrime) -> reg ptr u64[3] {
+    reg u64 sievePrime, multipleIndex, wheelIndex;
+    sievePrime, multipleIndex, wheelIndex = decompose(sievingPrime);
+    pout[0] = sievePrime;
+    pout[1] = multipleIndex;
+    pout[2] = wheelIndex;
+    return pout;
+  }
+*/
+}

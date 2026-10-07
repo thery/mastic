@@ -1,0 +1,62 @@
+/* proth_arch.jazz, x86-64 -- what the Proth test takes from the architecture:
+   the wide multiplication, the add-with-carry of zero, the top bit, and
+   the conditional subtraction (the borrow chain of SUB/SBB with CMOV on
+   !CF, the x86 convention: CF set means a borrow).  The additions with
+   carry, the shifts by a register and the conditional moves on a flag
+   are written the same way for both architectures, in proth_test.jazz. */
+
+param int NLIMBS = 2;      /* the limbs of the Proth test; here so that the layer stands alone */
+
+/* hi, lo = a * b */
+inline fn mul_wide(reg u64 a b) -> reg u64, reg u64 {
+  reg u64 hi lo;
+  lo = a;
+  hi, lo = lo * b;
+  return hi, lo;
+}
+
+/* x + cf, no carry out */
+inline fn adc_zero(reg u64 x, reg bool cf) -> reg u64 {
+  _, x += 0 + cf;
+  return x;
+}
+
+/* x + cf with its carry out */
+inline fn adcs_zero(reg u64 x, reg bool cf) -> reg bool, reg u64 {
+  cf, x += 0 + cf;
+  return cf, x;
+}
+
+/* the index of the highest set bit of h, h != 0 */
+inline fn top_bit(reg u64 h) -> reg u64 {
+  reg u64 k;
+  reg bool zf;
+  ?{ZF = zf}, k = #BSR_64(h);
+  return k;
+}
+
+/* r - N if N <= r < 2N, else r; nn = [n0, .., ninv] */
+inline fn csub_mod(reg u64[NLIMBS] r, reg ptr u64[NLIMBS + 1] nn) -> reg u64[NLIMBS] {
+  inline int i;
+  reg u64[NLIMBS] s;
+  reg bool cf;
+  s[0] = r[0];
+  cf, s[0] -= nn[0];
+  for i = 1 to NLIMBS {
+    s[i] = r[i];
+    cf, s[i] -= nn[i] - cf;
+  }
+  for i = 0 to NLIMBS {
+    r[i] = s[i] if !cf;
+  }
+  return r;
+}
+
+/* a mod b, b != 0 */
+inline fn mod_u64(reg u64 a b) -> reg u64 {
+  reg u64 t r res;
+  t = a;                 /* DIV wants its dividend in RAX and leaves the remainder in RDX: */
+  r = t % b;             /* copies on both sides, so that neither fixed register is the */
+  res = r;               /* caller's variable */
+  return res;
+}

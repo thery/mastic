@@ -1,0 +1,39 @@
+param int bloc_size = 4046;
+type arch_size = u64;
+
+
+export fn memncopy
+(
+    reg ptr arch_size[bloc_size] target,
+    reg ptr arch_size[bloc_size] source,
+    reg arch_size size
+)
+->
+    reg ptr arch_size[bloc_size],
+    reg ptr arch_size[bloc_size]
+{
+    reg arch_size i;
+    i=0;
+
+    while (i< size) {
+        target[i] = source[i];
+        i+=1;
+    }
+
+    return (target,source);
+}
+
+#[mmx] type u32x2 = u64;
+
+fn inc(reg u32x2 a) -> reg u32x2 {
+  global u32x2 one = (2u32)[ 1, 1 ];
+  a = #PADD_2u32(a, one);
+  return a;
+}
+
+export fn test_inc(reg u64 i) -> reg u64 {
+  reg u32x2 v = i;
+  v = inc(v);
+  i = v;
+  return i;
+}

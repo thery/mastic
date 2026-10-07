@@ -1,0 +1,171 @@
+require "math.jazz"
+require "wheel30.jazz"
+require "wheel210.jazz"
+require "memory.jazz"
+
+param int L1CacheSize = 32 << 10;    // 2^15 = 32768
+
+/* The segment size is a RUN-TIME value on this branch: log2SieveBytes is an
+   argument of the exports, and everything derived from it lives in a Cfg
+   record computed once per run (Cfg::init).  The types are sized for the
+   largest segment; the code only touches the first SieveBytes bytes. */
+param int minLog2SieveBytes = 18;
+param int maxLog2SieveBytes = 23;    // multipleIndex has 23 bits (sieving_prime.jazz)
+param int MinSieveBytes = 1 << minLog2SieveBytes;
+param int MaxSieveBytes = 1 << maxLog2SieveBytes;
+
+param int minEratSmall = 167;
+param int maxEratSmall = 6553;  // L1CacheSize * 0.2
+
+/* The run-time configuration.  Indices of the fields of a Cfg::t. */
+namespace Cfg {
+  param int LOG2       = 0;   // log2SieveBytes
+  param int BYTES      = 1;   // SieveBytes = 1 << LOG2
+  param int SPAN       = 2;   // SieveSpan = SieveBytes * 30
+  param int MAXMEDIUM  = 3;   // maxEratMedium = 3 * SieveBytes
+  param int SQRTSPAN   = 4;   // isqrt(SieveSpan)
+  param int BIGMEMSIZE = 5;   // EratBig::BigMemSize
+  param int SEGSPAN    = 6;   // SieveSpan * BigMemSize
+  param int SHIFT      = 7;   // LOG2 + wheelIndexBits (BigMem packing)
+  param int MASK       = 8;   // (SieveBytes << wheelIndexBits) - 1
+  param int BPT        = 9;   // Goldbach: wheel bytes per tile, SieveBytes / GB_NTILES
+  param int OWNBYTES   = 10;  // Goldbach: 8 * GB_OWNWORDS
+  param int TILEBYTES  = 11;  // Goldbach: bytes of the tile map in use
+  param int OWNWORDS   = 12;  // Goldbach: GB_OWNWORDS
+  param int POOLBUCKETS = 13; // the pool's size in buckets, M: the client's, stored by each export
+  param int ROOT       = 14;  // the run's root, no sieving prime exceeds it: isqrt(MAXNUM),
+                              // or 2^32 - 1 = isqrt(2^64 - 1) when MAXNUM is 0
+  param int MAXNUM     = 15;  // exclusive end of the run: the end of the segment holding hi;
+                              // 0 means that end is 2^64 or beyond, i.e. the run's last
+                              // segment is partial (it holds 2^64 - 1)
+  param int SIZE = 16;
+  type t = u64[SIZE];
+
+  /* x / SieveSpan, exact: SieveSpan = 30 * 2^k, so x / (30 * 2^k) = (x >> k) / 30. */
+  inline fn divSpan(reg u64 x, reg u64 k) -> reg u64 {
+    reg u64 q = x; q >>= (k & 63);
+    q = udiv_64_imm(q, 30);
+    return q;
+  }
+
+  /* The sieve fields, and the run's: its end MAXNUM, its root ROOT, and the
+     window of EratBig sized from that root.
+     Pre: minLog2SieveBytes <= k <= maxLog2SieveBytes.  Every hi < 2^64 is
+     admitted: SieveSpan = 30 * 2^k does not divide 2^64, and when hi is in
+     the last segment, the one holding 2^64 - 1, that segment is PARTIAL: its
+     end (hi / SieveSpan + 1) * SieveSpan is 2^64 or beyond.  Its positions
+     from 2^64 on are sieved like the others and never read. */
+  fn init(reg ptr t cfg, reg u64 k, reg u64 hi) -> reg ptr t {
+    reg u64 bytes = 1; bytes <<= (k & 63);
+    reg u64 span = bytes; span *= Wheel30::WHEEL;
+    cfg[LOG2] = k;
+    cfg[BYTES] = bytes;
+    cfg[SPAN] = span;
+    reg u64 t = bytes; t *= 3;
+    cfg[MAXMEDIUM] = t;
+    #spill(cfg, k, bytes, span, hi);
+    t = isqrt(span);
+    #unspill(cfg, k, bytes, span, hi);
+    cfg[SQRTSPAN] = t;
+    /* The run ends with the segment holding hi; every sieving prime it needs
+       is at most the root of that end, and at most isqrt(2^64 - 1) = 2^32 - 1
+       when that end is 2^64 or beyond (the high word of the product is then
+       nonzero). */
+    reg u64 th, tl;
+    t = divSpan(hi, k); t += 1;
+    _, _, _, _, _, th, tl = #MUL(t, span);
+    if (th != 0) {
+      cfg[MAXNUM] = 0;
+      t = 4294967295;
+    } else {
+      cfg[MAXNUM] = tl;
+      t = tl;
+      #spill(cfg, k, bytes, span);
+      t = isqrt(t);
+      #unspill(cfg, k, bytes, span);
+    }
+    cfg[ROOT] = t;
+    /* BigMemSize = ((SieveBytes - 1 + 10 * (ROOT / 30) + 10) >> log2SieveBytes) + 1:
+       the window has to cover the stride of the largest prime stored, and a
+       prime p has its next multiple at most 10 * (p / 30) + 10 bytes ahead
+       (maxMultipleFactor, wheel 210), with p <= ROOT.  Sized by the run's
+       root rather than by the build's reach, a small run walks a few slots
+       per segment instead of thousands. */
+    t = udiv_64_imm(t, 30);
+    t *= Wheel210::maxMultipleFactor; t += Wheel210::maxMultipleFactor;
+    t += bytes; t -= 1; t >>= (k & 63); t += 1;
+    cfg[BIGMEMSIZE] = t;
+    t *= span;
+    cfg[SEGSPAN] = t;
+    t = k; t += SievingPrime::wheelIndexBits;
+    cfg[SHIFT] = t;
+    t = bytes; t <<= SievingPrime::wheelIndexBits; t -= 1;
+    cfg[MASK] = t;
+    return cfg;
+  }
+}
+
+namespace Sieve {
+
+type t = u8[MaxSieveBytes];
+
+inline fn isPrime(reg u64 byte, reg u64 r) -> reg bool {
+  reg bool b;
+  ?{CF=b} = #BT_64(byte, r);  
+  return b;   
+}
+
+inline fn is_prime(reg ptr t sieve, reg u64 i, reg u64 r) -> reg bool {
+   reg u64 byte;
+   byte = (64u)sieve[i];
+   reg bool b;
+   b = isPrime(byte, r);
+   return b;
+}
+
+/* The primes of the bytes [sievePrime, last) of the segment at segmentLow
+   (the first from residue index r), stored into the queue at `end'.
+
+   room is the queue's BUDGET (ec/PLAN-lazy-pool.md, DC1-DC2, section 12):
+   the number of primes it may still take, plus one, or 0 once a prime has
+   been refused.  A prime is stored while room > 1, and room goes down by one
+   with each store: so the number of primes stored is room - room', room'
+   the budget returned, and never more than room - 1.  A prime found with
+   room <= 1 is refused, not stored, and room becomes 0; every later prime
+   is refused as well (0 <= 1), the scan runs to the end of its bytes
+   without storing, and eratInit, seeing 0, stops.  The budget is where the
+   pool's check lives: eratInit gives the scan room0 = 1023 n - K, K the
+   chains' and the slacks' share, so that the queue never holds more than
+   the proof's fits n (w + poolSlack) (72 + bigMemSize) allows.  One
+   register, the count itself: accumulatePrimes has none to spare. */
+fn accumulatePrimes
+  (reg ptr t sieve, reg Bucket::bucketPtr pool, reg Primes::primePtr end, 
+   reg u64 segmentLow, reg u64 sievePrime, reg u64 r, reg u64 last, reg u64 room) 
+   ->
+  reg Bucket::bucketPtr, reg Primes::primePtr, reg u64
+{
+  reg u64 segmentLow30;
+  segmentLow30 = udiv_64_imm(segmentLow, Wheel30::WHEEL);
+  while (sievePrime < last) {
+    reg u64 byte = (64u)sieve[sievePrime];
+    while (r < 8) { 
+      reg bool isPrime;
+      isPrime = isPrime(byte, r); 
+      if (isPrime) { 
+        if (room > 1) {
+          reg u64 tmp = sievePrime; tmp += segmentLow30;
+          pool, end = Primes::storePrime(pool, end, tmp, r);
+          room -= 1;
+        } else {
+          room = 0;                     // refused: the pool is too small
+        }
+      }
+      r += 1;
+    }
+    sievePrime += 1;
+    r = 0;
+  }
+  return pool, end, room;
+}
+
+} // Sieve

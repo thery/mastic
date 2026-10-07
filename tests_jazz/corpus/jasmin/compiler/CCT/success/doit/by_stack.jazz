@@ -1,0 +1,7 @@
+#[ct="secret -> secret"]
+export fn id(reg u32 x) -> reg u32 {
+  stack u32 s;
+  s = x;
+  x = s;
+  return x;
+}

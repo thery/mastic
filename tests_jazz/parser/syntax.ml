@@ -483,6 +483,9 @@ type pitem =
   | PNamespace of pident * pitem L.located list
   | PTypeAlias of pident * pannotations * ptype
   | PError of Mastic.Error.t  (* error node *)
+  | PFunError of Mastic.Error.t * pfunbody
+      (* error node: a function whose header (name, arguments, result
+         types) is broken *)
 
 (* -------------------------------------------------------------------- *)
 type pprogram = pitem L.located list

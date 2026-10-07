@@ -1,0 +1,12 @@
+#[sct = "public → ()"] inline fn leak(reg u64 c) { if c != 0 {} }
+
+u8[6] g = "jasmin";
+
+#[sct = "transient → public"] fn call_kills_msf(reg u64 c) -> reg u64 {
+  reg u64 m x;
+  m = #init_msf();
+  x = g[:u64 c];
+  leak(0);
+  x = #protect(x, m);
+  return x;
+}

@@ -529,6 +529,7 @@ top:
 | NAMESPACE name = ident LBRACE pfs = loc(top)* RBRACE
     { Syntax.PNamespace (name, pfs) }
 | e=ERROR_TOKEN { Item.of_token e }
+| annotations call_conv? FN e=ERROR_TOKEN body=pfunbody { Syntax.PFunError (e, body) }
 | e=INSTR_ERROR_TOKEN { Item.of_token e }
 | e=ITEM_ERROR_TOKEN { Item.of_token e }
 (* -------------------------------------------------------------------- *)

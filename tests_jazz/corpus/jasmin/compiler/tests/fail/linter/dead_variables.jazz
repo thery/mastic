@@ -1,0 +1,114 @@
+
+export fn test_for() {
+    inline int x;
+    reg u64 y;
+    for x = 0 to 10 {
+        y = x + 1;
+    }
+}
+
+export fn inout(reg u64 x) {
+  x = x;
+}
+
+fn test_funcall_sub(reg u64 x) -> reg u64 {
+    return x;
+}
+
+export fn test_funcall() {
+    reg u64 x;
+    reg u64 y;
+
+    x = 1;
+    y = test_funcall_sub(x);
+}
+
+// x is dead here
+fn test_if() -> reg u64 {
+
+    reg u64 x = 1;
+    reg u64 y;
+
+    y = 1;
+    if (x == 1) {
+        x=1;
+    }
+    else {
+        y=2;
+    }
+
+    return x;
+
+}
+
+export fn test_mem(reg u64 x) -> reg u64 {
+    [x] = 1;
+    return x;
+}
+
+export fn test_mem_2(reg u64 x){
+    [x] = 1;
+}
+
+export fn test_while() {
+
+    reg u64 y = 1;
+    inline int x = 1;
+
+    while (x < 10) {
+        while (y < 1) {
+            y = 2;
+        }
+        x -= 1;
+        y = 3;
+    }
+    x = y;
+}
+
+export fn test_while2() -> reg u64 {
+    reg u64 y;
+    reg u64 x;
+    y=1; // y should be live here (used at '6')
+    x=y;
+
+    while (x < 100) {
+        while (x < 100) {
+            y = x + 1; // y should be dead here
+        }
+        x = x + 1;
+    }
+
+    return x;
+}
+
+export fn bug_1214(reg ptr u8[4] p) -> reg ptr u8[4] {
+  reg ptr u32[1] q = p;
+  reg u32 v = 42;
+  q[0] = v;
+  return p;
+}
+
+
+export fn explicit_copy() -> reg u64 {
+  reg u64[1] r;
+  stack u64[1] s;
+  reg ptr u64[1] p = s;
+  r[0] = 0;
+  p = #copy(r);
+  s = p;
+  reg u64 a = s[0];
+  return a;
+}
+
+export fn load(reg ptr u32[1] a) {
+  stack u32[1] q;
+  reg ptr u32[1] p = q;
+  p = #copy_32(a);
+}
+
+fn implicit_flag_name() -> reg bool {
+  reg bool b _cf_;
+  _cf_ = true; // must warn
+  ?{zf = b}, _ = #set0(); // must not warn
+  return b;
+}

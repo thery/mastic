@@ -1,0 +1,9 @@
+export
+fn main() {
+  stack u64 s;
+  reg u64 x = 0;
+  if false {
+    x = s;
+  }
+  [ x ] = 0;
+}

@@ -1,0 +1,527 @@
+require "math.jazz"
+require "sieve.jazz"
+require "presieve_tables.jazz"
+
+namespace PreSieve {
+
+u8[6] fix_firstSieve = { 0xFE, 0xDF, 0xEF, 0x7E, 0xB6, 0xDB };
+
+fn presieve1(reg ptr Sieve::t sieve, reg u64 i0, reg u64 i1, reg u64 i2, reg u64 i3, reg u64 o, reg u64 bytes) 
+     -> reg ptr Sieve::t, reg u64, reg u64, reg u64, reg u64, reg u64
+{
+  reg u64 limit = bytes; limit &= (-128); // limit = bytes - bytes % 128;
+  
+  reg ptr u8[SizePreSieveTable0] pre0 = preSieveTable0;
+  reg ptr u8[SizePreSieveTable1] pre1 = preSieveTable1;
+  reg ptr u8[SizePreSieveTable2] pre2 = preSieveTable2;
+  reg ptr u8[SizePreSieveTable3] pre3 = preSieveTable3;
+
+  reg u64 i = 0;
+  while (i < limit) {
+    reg u256 tmp, tmp_32, tmp_64, tmp_96;
+    tmp  = pre0.[:u256 i0]; tmp_32  = pre0.[:u256 i0 + 32]; tmp_64  = pre0.[:u256 i0 + 64]; tmp_96  = pre0.[:u256 i0 + 96]; 
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32]; tmp_64 &= pre1.[:u256 i1 + 64]; tmp_96 &= pre1.[:u256 i1 + 96];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32]; tmp_64 &= pre2.[:u256 i2 + 64]; tmp_96 &= pre2.[:u256 i2 + 96];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32]; tmp_64 &= pre3.[:u256 i3 + 64]; tmp_96 &= pre3.[:u256 i3 + 96];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32; sieve.[:u256 o + 64] = tmp_64;  sieve.[:u256 o + 96] = tmp_96; 
+    i += 128; i0 += 128; i1 += 128; i2 += 128; i3 += 128; o += 128;
+  }  
+  reg u64 aux;
+  aux = i; aux += 64;
+  if (aux <= bytes) {
+    reg u256 tmp, tmp_32;
+    tmp  = pre0.[:u256 i0]; tmp_32  = pre0.[:u256 i0 + 32]; 
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32; 
+    i = aux; i0 += 64; i1 += 64; i2 += 64; i3 += 64; o += 64;
+  }
+  aux = i; aux += 32;
+  if (aux <= bytes) {
+    reg u256 tmp;
+    tmp  = pre0.[:u256 i0]; 
+    tmp &= pre1.[:u256 i1];
+    tmp &= pre2.[:u256 i2];
+    tmp &= pre3.[:u256 i3];
+    sieve.[:u256 o] = tmp; 
+    i = aux; i0 += 32; i1 += 32; i2 += 32; i3 += 32; o += 32;
+  }
+  aux = i; aux += 16;
+  if (aux <= bytes) { 
+    reg u128 tmp;
+    tmp  = pre0.[:u128 i0];
+    tmp &= pre1.[:u128 i1];
+    tmp &= pre2.[:u128 i2];
+    tmp &= pre3.[:u128 i3];
+    sieve.[:u128 o] = tmp;
+    i = aux; i0 += 16; i1 += 16; i2 += 16; i3 += 16; o += 16;
+  }
+  aux = i; aux += 8;
+  if (aux <= bytes) {
+    reg u64 tmp;
+    tmp  = pre0.[:u64 i0];
+    tmp &= pre1.[:u64 i1];
+    tmp &= pre2.[:u64 i2];
+    tmp &= pre3.[:u64 i3];
+    sieve.[:u64 o] = tmp;
+    i = aux; i0 += 8; i1 += 8; i2 += 8; i3 += 8; o += 8;
+  } 
+  aux = i; aux += 4;
+  if (aux <= bytes) {
+    reg u32 tmp;
+    tmp  = pre0.[:u32 i0];
+    tmp &= pre1.[:u32 i1];
+    tmp &= pre2.[:u32 i2];
+    tmp &= pre3.[:u32 i3];
+    sieve.[:u32 o] = tmp;
+    i = aux; i0 += 4; i1 += 4; i2 += 4; i3 += 4; o += 4;
+  } 
+  aux = i; aux += 2;
+  if (aux <= bytes) {
+    reg u16 tmp;
+    tmp  = pre0.[:u16 i0];
+    tmp &= pre1.[:u16 i1];
+    tmp &= pre2.[:u16 i2];
+    tmp &= pre3.[:u16 i3];
+    sieve.[:u16 o] = tmp;
+    i = aux; i0 += 2; i1 += 2; i2 += 2; i3 += 2; o += 2;
+  } 
+  if (i < bytes) {
+    reg u8 tmp;
+    tmp  = pre0.[:u8 i0];
+    tmp &= pre1.[:u8 i1];
+    tmp &= pre2.[:u8 i2];
+    tmp &= pre3.[:u8 i3];
+    sieve.[:u8 o] = tmp;
+    i0 += 1; i1 += 1; i2 += 1; i3 += 1; o += 1;
+  }  
+  return sieve, i0, i1, i2, i3, o;
+}
+
+fn presieve2(reg ptr Sieve::t sieve, reg u64 i0, reg u64 i1, reg u64 i2, reg u64 i3, reg u64 o, reg u64 bytes) 
+     -> reg ptr Sieve::t, reg u64, reg u64, reg u64, reg u64, reg u64
+{
+  reg u64 limit = bytes; limit &= (-128); // limit = bytes - bytes % 128;
+  
+  reg ptr u8[SizePreSieveTable4] pre0 = preSieveTable4;
+  reg ptr u8[SizePreSieveTable5] pre1 = preSieveTable5;
+  reg ptr u8[SizePreSieveTable6] pre2 = preSieveTable6;
+  reg ptr u8[SizePreSieveTable7] pre3 = preSieveTable7;
+
+  reg u64 i = 0;
+  while (i < limit) {
+    reg u256 tmp, tmp_32, tmp_64, tmp_96;
+    tmp  = sieve.[:u256 o]; tmp_32  = sieve.[:u256 o + 32]; tmp_64  = sieve.[:u256 o + 64]; tmp_96  = sieve.[:u256 o + 96]; 
+    tmp &= pre0.[:u256 i0]; tmp_32 &= pre0.[:u256 i0 + 32]; tmp_64 &= pre0.[:u256 i0 + 64]; tmp_96 &= pre0.[:u256 i0 + 96];
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32]; tmp_64 &= pre1.[:u256 i1 + 64]; tmp_96 &= pre1.[:u256 i1 + 96];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32]; tmp_64 &= pre2.[:u256 i2 + 64]; tmp_96 &= pre2.[:u256 i2 + 96];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32]; tmp_64 &= pre3.[:u256 i3 + 64]; tmp_96 &= pre3.[:u256 i3 + 96];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32;  sieve.[:u256 o + 64] = tmp_64;  sieve.[:u256 o + 96] = tmp_96; 
+    i += 128; i0 += 128; i1 += 128; i2 += 128; i3 += 128; o += 128;
+  }  
+  reg u64 aux;
+  aux = i; aux += 64;
+  if (aux <= bytes) {
+    reg u256 tmp, tmp_32;
+    tmp  = sieve.[:u256 o]; tmp_32  = sieve.[:u256 o + 32]; 
+    tmp &= pre0.[:u256 i0]; tmp_32 &= pre0.[:u256 i0 + 32];
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32;
+    i = aux; i0 += 64; i1 += 64; i2 += 64; i3 += 64; o += 64;
+  }
+  aux = i; aux += 32;
+  if (aux <= bytes) {
+    reg u256 tmp;
+    tmp  = sieve.[:u256 o]; 
+    tmp &= pre0.[:u256 i0]; 
+    tmp &= pre1.[:u256 i1]; 
+    tmp &= pre2.[:u256 i2]; 
+    tmp &= pre3.[:u256 i3]; 
+    sieve.[:u256 o] = tmp;
+    i = aux; i0 += 32; i1 += 32; i2 += 32; i3 += 32; o += 32;
+  }
+  aux = i; aux += 16;
+  if (aux <= bytes) { 
+    reg u128 tmp;
+    tmp  = sieve.[:u128 o];
+    tmp &= pre0.[:u128 i0];
+    tmp &= pre1.[:u128 i1];
+    tmp &= pre2.[:u128 i2];
+    tmp &= pre3.[:u128 i3];
+    sieve.[:u128 o] = tmp;
+    i = aux; i0 += 16; i1 += 16; i2 += 16; i3 += 16; o += 16;
+  }
+  aux = i; aux += 8;
+  if (aux <= bytes) {
+    reg u64 tmp;
+    tmp  = sieve.[:u64 o];
+    tmp &= pre0.[:u64 i0];
+    tmp &= pre1.[:u64 i1];
+    tmp &= pre2.[:u64 i2];
+    tmp &= pre3.[:u64 i3];
+    sieve.[:u64 o] = tmp;
+    i = aux; i0 += 8; i1 += 8; i2 += 8; i3 += 8; o += 8;
+  } 
+  aux = i; aux += 4;
+  if (aux <= bytes) {
+    reg u32 tmp;
+    tmp  = sieve.[:u32 o];
+    tmp &= pre0.[:u32 i0];
+    tmp &= pre1.[:u32 i1];
+    tmp &= pre2.[:u32 i2];
+    tmp &= pre3.[:u32 i3];
+    sieve.[:u32 o] = tmp;
+    i = aux; i0 += 4; i1 += 4; i2 += 4; i3 += 4; o += 4;
+  } 
+  aux = i; aux += 2;
+  if (aux <= bytes) {
+    reg u16 tmp;
+    tmp  = sieve.[:u16 o];
+    tmp &= pre0.[:u16 i0];
+    tmp &= pre1.[:u16 i1];
+    tmp &= pre2.[:u16 i2];
+    tmp &= pre3.[:u16 i3];
+    sieve.[:u16 o] = tmp;
+    i = aux; i0 += 2; i1 += 2; i2 += 2; i3 += 2; o += 2;
+  } 
+  if (i < bytes) {
+    reg u8 tmp;
+    tmp  = sieve.[:u8 o];
+    tmp &= pre0.[:u8 i0];
+    tmp &= pre1.[:u8 i1];
+    tmp &= pre2.[:u8 i2];
+    tmp &= pre3.[:u8 i3];
+    sieve.[:u8 o] = tmp;
+    i0 += 1; i1 += 1; i2 += 1; i3 += 1; o += 1;
+  }  
+  return sieve, i0, i1, i2, i3, o;
+}
+
+fn presieve3(reg ptr Sieve::t sieve, reg u64 i0, reg u64 i1, reg u64 i2, reg u64 i3, reg u64 o, reg u64 bytes) 
+     -> reg ptr Sieve::t, reg u64, reg u64, reg u64, reg u64, reg u64
+{
+  reg u64 limit = bytes; limit &= (-128); // limit = bytes - bytes % 128;
+  
+  reg ptr u8[SizePreSieveTable8] pre0 = preSieveTable8;
+  reg ptr u8[SizePreSieveTable9] pre1 = preSieveTable9;
+  reg ptr u8[SizePreSieveTable10] pre2 = preSieveTable10;
+  reg ptr u8[SizePreSieveTable11] pre3 = preSieveTable11;
+
+  reg u64 i = 0;
+  while (i < limit) {
+    reg u256 tmp, tmp_32, tmp_64, tmp_96;
+    tmp  = sieve.[:u256 o]; tmp_32  = sieve.[:u256 o + 32]; tmp_64  = sieve.[:u256 o + 64]; tmp_96  = sieve.[:u256 o + 96]; 
+    tmp &= pre0.[:u256 i0]; tmp_32 &= pre0.[:u256 i0 + 32]; tmp_64 &= pre0.[:u256 i0 + 64]; tmp_96 &= pre0.[:u256 i0 + 96];
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32]; tmp_64 &= pre1.[:u256 i1 + 64]; tmp_96 &= pre1.[:u256 i1 + 96];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32]; tmp_64 &= pre2.[:u256 i2 + 64]; tmp_96 &= pre2.[:u256 i2 + 96];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32]; tmp_64 &= pre3.[:u256 i3 + 64]; tmp_96 &= pre3.[:u256 i3 + 96];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32;  sieve.[:u256 o + 64] = tmp_64;  sieve.[:u256 o + 96] = tmp_96; 
+    i += 128; i0 += 128; i1 += 128; i2 += 128; i3 += 128; o += 128;
+  }  
+  reg u64 aux;
+  aux = i; aux += 64;
+  if (aux <= bytes) {
+    reg u256 tmp, tmp_32;
+    tmp  = sieve.[:u256 o]; tmp_32  = sieve.[:u256 o + 32]; 
+    tmp &= pre0.[:u256 i0]; tmp_32 &= pre0.[:u256 i0 + 32];
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32;
+    i = aux; i0 += 64; i1 += 64; i2 += 64; i3 += 64; o += 64;
+  }
+  aux = i; aux += 32;
+  if (aux <= bytes) {
+    reg u256 tmp;
+    tmp  = sieve.[:u256 o]; 
+    tmp &= pre0.[:u256 i0]; 
+    tmp &= pre1.[:u256 i1]; 
+    tmp &= pre2.[:u256 i2]; 
+    tmp &= pre3.[:u256 i3]; 
+    sieve.[:u256 o] = tmp;
+    i = aux; i0 += 32; i1 += 32; i2 += 32; i3 += 32; o += 32;
+  }
+  aux = i; aux += 16;
+  if (aux <= bytes) { 
+    reg u128 tmp;
+    tmp  = sieve.[:u128 o];
+    tmp &= pre0.[:u128 i0];
+    tmp &= pre1.[:u128 i1];
+    tmp &= pre2.[:u128 i2];
+    tmp &= pre3.[:u128 i3];
+    sieve.[:u128 o] = tmp;
+    i = aux; i0 += 16; i1 += 16; i2 += 16; i3 += 16; o += 16;
+  }
+  aux = i; aux += 8;
+  if (aux <= bytes) {
+    reg u64 tmp;
+    tmp  = sieve.[:u64 o];
+    tmp &= pre0.[:u64 i0];
+    tmp &= pre1.[:u64 i1];
+    tmp &= pre2.[:u64 i2];
+    tmp &= pre3.[:u64 i3];
+    sieve.[:u64 o] = tmp;
+    i = aux; i0 += 8; i1 += 8; i2 += 8; i3 += 8; o += 8;
+  } 
+  aux = i; aux += 4;
+  if (aux <= bytes) {
+    reg u32 tmp;
+    tmp  = sieve.[:u32 o];
+    tmp &= pre0.[:u32 i0];
+    tmp &= pre1.[:u32 i1];
+    tmp &= pre2.[:u32 i2];
+    tmp &= pre3.[:u32 i3];
+    sieve.[:u32 o] = tmp;
+    i = aux; i0 += 4; i1 += 4; i2 += 4; i3 += 4; o += 4;
+  } 
+  aux = i; aux += 2;
+  if (aux <= bytes) {
+    reg u16 tmp;
+    tmp  = sieve.[:u16 o];
+    tmp &= pre0.[:u16 i0];
+    tmp &= pre1.[:u16 i1];
+    tmp &= pre2.[:u16 i2];
+    tmp &= pre3.[:u16 i3];
+    sieve.[:u16 o] = tmp;
+    i = aux; i0 += 2; i1 += 2; i2 += 2; i3 += 2; o += 2;
+  } 
+  if (i < bytes) {
+    reg u8 tmp;
+    tmp  = sieve.[:u8 o];
+    tmp &= pre0.[:u8 i0];
+    tmp &= pre1.[:u8 i1];
+    tmp &= pre2.[:u8 i2];
+    tmp &= pre3.[:u8 i3];
+    sieve.[:u8 o] = tmp;
+    i0 += 1; i1 += 1; i2 += 1; i3 += 1; o += 1;
+  }  
+  return sieve, i0, i1, i2, i3, o;
+}
+
+fn presieve4(reg ptr Sieve::t sieve, reg u64 i0, reg u64 i1, reg u64 i2, reg u64 i3, reg u64 o, reg u64 bytes) 
+     -> reg ptr Sieve::t, reg u64, reg u64, reg u64, reg u64, reg u64
+{
+  reg u64 limit = bytes; limit &= (-128); // limit = bytes - bytes % 128;
+  
+  reg ptr u8[SizePreSieveTable12] pre0 = preSieveTable12;
+  reg ptr u8[SizePreSieveTable13] pre1 = preSieveTable13;
+  reg ptr u8[SizePreSieveTable14] pre2 = preSieveTable14;
+  reg ptr u8[SizePreSieveTable15] pre3 = preSieveTable15;
+
+  reg u64 i = 0;
+  while (i < limit) {
+    reg u256 tmp, tmp_32, tmp_64, tmp_96;
+    tmp  = sieve.[:u256 o]; tmp_32  = sieve.[:u256 o + 32]; tmp_64  = sieve.[:u256 o + 64]; tmp_96  = sieve.[:u256 o + 96]; 
+    tmp &= pre0.[:u256 i0]; tmp_32 &= pre0.[:u256 i0 + 32]; tmp_64 &= pre0.[:u256 i0 + 64]; tmp_96 &= pre0.[:u256 i0 + 96];
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32]; tmp_64 &= pre1.[:u256 i1 + 64]; tmp_96 &= pre1.[:u256 i1 + 96];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32]; tmp_64 &= pre2.[:u256 i2 + 64]; tmp_96 &= pre2.[:u256 i2 + 96];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32]; tmp_64 &= pre3.[:u256 i3 + 64]; tmp_96 &= pre3.[:u256 i3 + 96];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32;  sieve.[:u256 o + 64] = tmp_64;  sieve.[:u256 o + 96] = tmp_96; 
+    i += 128; i0 += 128; i1 += 128; i2 += 128; i3 += 128; o += 128;
+  }  
+  reg u64 aux;
+  aux = i; aux += 64;
+  if (aux <= bytes) {
+    reg u256 tmp, tmp_32;
+    tmp  = sieve.[:u256 o]; tmp_32  = sieve.[:u256 o + 32]; 
+    tmp &= pre0.[:u256 i0]; tmp_32 &= pre0.[:u256 i0 + 32];
+    tmp &= pre1.[:u256 i1]; tmp_32 &= pre1.[:u256 i1 + 32];
+    tmp &= pre2.[:u256 i2]; tmp_32 &= pre2.[:u256 i2 + 32];
+    tmp &= pre3.[:u256 i3]; tmp_32 &= pre3.[:u256 i3 + 32];
+    sieve.[:u256 o] = tmp;  sieve.[:u256 o + 32] = tmp_32;
+    i = aux; i0 += 64; i1 += 64; i2 += 64; i3 += 64; o += 64;
+  }
+  aux = i; aux += 32;
+  if (aux <= bytes) {
+    reg u256 tmp;
+    tmp  = sieve.[:u256 o]; 
+    tmp &= pre0.[:u256 i0]; 
+    tmp &= pre1.[:u256 i1]; 
+    tmp &= pre2.[:u256 i2]; 
+    tmp &= pre3.[:u256 i3]; 
+    sieve.[:u256 o] = tmp;
+    i = aux; i0 += 32; i1 += 32; i2 += 32; i3 += 32; o += 32;
+  }
+  aux = i; aux += 16;
+  if (aux <= bytes) { 
+    reg u128 tmp;
+    tmp  = sieve.[:u128 o];
+    tmp &= pre0.[:u128 i0];
+    tmp &= pre1.[:u128 i1];
+    tmp &= pre2.[:u128 i2];
+    tmp &= pre3.[:u128 i3];
+    sieve.[:u128 o] = tmp;
+    i = aux; i0 += 16; i1 += 16; i2 += 16; i3 += 16; o += 16;
+  }
+  aux = i; aux += 8;
+  if (aux <= bytes) {
+    reg u64 tmp;
+    tmp  = sieve.[:u64 o];
+    tmp &= pre0.[:u64 i0];
+    tmp &= pre1.[:u64 i1];
+    tmp &= pre2.[:u64 i2];
+    tmp &= pre3.[:u64 i3];
+    sieve.[:u64 o] = tmp;
+    i = aux; i0 += 8; i1 += 8; i2 += 8; i3 += 8; o += 8;
+  } 
+  aux = i; aux += 4;
+  if (aux <= bytes) {
+    reg u32 tmp;
+    tmp  = sieve.[:u32 o];
+    tmp &= pre0.[:u32 i0];
+    tmp &= pre1.[:u32 i1];
+    tmp &= pre2.[:u32 i2];
+    tmp &= pre3.[:u32 i3];
+    sieve.[:u32 o] = tmp;
+    i = aux; i0 += 4; i1 += 4; i2 += 4; i3 += 4; o += 4;
+  } 
+  aux = i; aux += 2;
+  if (aux <= bytes) {
+    reg u16 tmp;
+    tmp  = sieve.[:u16 o];
+    tmp &= pre0.[:u16 i0];
+    tmp &= pre1.[:u16 i1];
+    tmp &= pre2.[:u16 i2];
+    tmp &= pre3.[:u16 i3];
+    sieve.[:u16 o] = tmp;
+    i = aux; i0 += 2; i1 += 2; i2 += 2; i3 += 2; o += 2;
+  } 
+  if (i < bytes) {
+    reg u8 tmp;
+    tmp  = sieve.[:u8 o];
+    tmp &= pre0.[:u8 i0];
+    tmp &= pre1.[:u8 i1];
+    tmp &= pre2.[:u8 i2];
+    tmp &= pre3.[:u8 i3];
+    sieve.[:u8 o] = tmp;
+    i0 += 1; i1 += 1; i2 += 1; i3 += 1; o += 1;
+  }  
+  return sieve, i0, i1, i2, i3, o;
+}
+
+// Pre: segmentLow is a multiple of 30
+inline fn initPos (reg u64 segmentLow, inline int SizePreSieveTable) -> reg u64 {
+  reg u64 pos;
+  pos = umod_64_imm(segmentLow, SizePreSieveTable * 30);
+  pos = udiv_64_imm(pos, 30);
+  return pos;     
+}
+
+inline fn minRemain(reg u64 bytesToCopy, inline int SizePreSieveTable, reg u64 pos) -> reg u64 {
+  reg u64 remain;
+  remain = SizePreSieveTable; remain -= pos;
+  bytesToCopy = remain if (remain < bytesToCopy);
+  return bytesToCopy;
+}
+
+inline fn fixPresieve(reg ptr Sieve::t sieve, reg u64 segmentLow) -> reg ptr Sieve::t { 
+  if (segmentLow ==0) {
+    reg ptr u8[6] firstSieve = fix_firstSieve;
+    reg u8 tmp;
+    inline int i;
+    for i = 0 to 6 {
+      tmp = firstSieve[i];
+      sieve[i] = tmp; 
+    }    
+  }
+  return sieve;
+}   
+
+// precondition segmentLow should be a multiple of WHEEL; sieveBytes is the segment size
+fn preSieve(reg ptr Sieve::t sieve, reg u64 segmentLow, reg u64 sieveBytes) -> reg ptr Sieve::t {
+  stack u64 sieveBytes_s = sieveBytes;
+  reg u64 offset, bytesToCopy, pos0, pos1, pos2, pos3;
+  offset = 0;
+  pos0 = initPos(segmentLow, SizePreSieveTable0); 
+  pos1 = initPos(segmentLow, SizePreSieveTable1); 
+  pos2 = initPos(segmentLow, SizePreSieveTable2);
+  pos3 = initPos(segmentLow, SizePreSieveTable3);
+
+  while (offset < sieveBytes_s) {
+    bytesToCopy = sieveBytes_s; bytesToCopy -= offset;
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable0, pos0);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable1, pos1);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable2, pos2);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable3, pos3);
+    sieve, pos0, pos1, pos2, pos3, offset = presieve1(sieve, pos0, pos1, pos2, pos3, offset, bytesToCopy);
+    reg u64 zero = 0;
+    pos0 = zero if pos0 == SizePreSieveTable0; 
+    pos1 = zero if pos1 == SizePreSieveTable1; 
+    pos2 = zero if pos2 == SizePreSieveTable2; 
+    pos3 = zero if pos3 == SizePreSieveTable3; 
+  } 
+
+  offset = 0;
+  pos0 = initPos(segmentLow, SizePreSieveTable4); 
+  pos1 = initPos(segmentLow, SizePreSieveTable5); 
+  pos2 = initPos(segmentLow, SizePreSieveTable6);
+  pos3 = initPos(segmentLow, SizePreSieveTable7);
+
+  while (offset < sieveBytes_s) {
+    bytesToCopy = sieveBytes_s; bytesToCopy -= offset;
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable4, pos0);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable5, pos1);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable6, pos2);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable7, pos3);
+    sieve, pos0, pos1, pos2, pos3, offset = presieve2(sieve, pos0, pos1, pos2, pos3, offset, bytesToCopy);
+    reg u64 zero = 0;
+    pos0 = zero if pos0 == SizePreSieveTable4; 
+    pos1 = zero if pos1 == SizePreSieveTable5; 
+    pos2 = zero if pos2 == SizePreSieveTable6; 
+    pos3 = zero if pos3 == SizePreSieveTable7; 
+  } 
+
+  offset = 0;
+  pos0 = initPos(segmentLow, SizePreSieveTable8); 
+  pos1 = initPos(segmentLow, SizePreSieveTable9); 
+  pos2 = initPos(segmentLow, SizePreSieveTable10);
+  pos3 = initPos(segmentLow, SizePreSieveTable11);
+
+  while (offset < sieveBytes_s) {
+    bytesToCopy = sieveBytes_s; bytesToCopy -= offset;
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable8, pos0);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable9, pos1);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable10, pos2);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable11, pos3);
+    sieve, pos0, pos1, pos2, pos3, offset = presieve3(sieve, pos0, pos1, pos2, pos3, offset, bytesToCopy);
+    reg u64 zero = 0;
+    pos0 = zero if pos0 == SizePreSieveTable8; 
+    pos1 = zero if pos1 == SizePreSieveTable9; 
+    pos2 = zero if pos2 == SizePreSieveTable10; 
+    pos3 = zero if pos3 == SizePreSieveTable11; 
+  } 
+
+  offset = 0;
+  pos0 = initPos(segmentLow, SizePreSieveTable12); 
+  pos1 = initPos(segmentLow, SizePreSieveTable13); 
+  pos2 = initPos(segmentLow, SizePreSieveTable14);
+  pos3 = initPos(segmentLow, SizePreSieveTable15);
+
+  while (offset < sieveBytes_s) {
+    bytesToCopy = sieveBytes_s; bytesToCopy -= offset;
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable12, pos0);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable13, pos1);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable14, pos2);
+    bytesToCopy = minRemain(bytesToCopy, SizePreSieveTable15, pos3);
+    sieve, pos0, pos1, pos2, pos3, offset = presieve4(sieve, pos0, pos1, pos2, pos3, offset, bytesToCopy);
+    reg u64 zero = 0;
+    pos0 = zero if pos0 == SizePreSieveTable12; 
+    pos1 = zero if pos1 == SizePreSieveTable13; 
+    pos2 = zero if pos2 == SizePreSieveTable14; 
+    pos3 = zero if pos3 == SizePreSieveTable15; 
+  } 
+
+  sieve = fixPresieve(sieve, segmentLow);
+  return sieve;
+}
+}
+
+
+
+
+
+
+   

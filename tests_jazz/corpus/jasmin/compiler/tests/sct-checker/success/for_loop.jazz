@@ -1,0 +1,22 @@
+#[sct="msf → msf"]
+fn for_inference_bug1(reg u64 msf) -> reg u64 {
+    inline int i;
+    for i = 0 to 1 {
+        msf = #init_msf();
+    }
+    return msf;
+}
+
+#[sct = "transient → public"]
+fn for_inference_bug2(reg u64 x) -> reg u64 {
+    reg u64 msf;
+    msf = #init_msf();
+
+    inline int i;
+    for i = 0 to 1 {
+        msf = #init_msf();
+    }
+
+    x = #protect(x, msf);
+    return x;
+}

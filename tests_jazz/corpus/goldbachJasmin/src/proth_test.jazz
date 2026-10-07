@@ -1,0 +1,42 @@
+/* proth_test.jazz -- the Proth test on two 64-bit limbs, x86-64.
+
+   The export proth_test(h, n, a) returns 1 if a^((N-1)/2) = -1 (mod N) and
+   0 otherwise, for N = h*2^n + 1 with 1 <= h < 2^n, 2 <= n <= 62 and
+   2 <= a < 32.  By Proth's theorem a 1 proves N prime.  It is the test
+   proth_ladder.c does in C (proth_mont.h), with the same algorithm:
+
+   - N < 2^125, so N and every residue fit in NLIMBS = 2 limbs.
+   - Residues are kept in Montgomery form x*R mod N with R = 2^(64*NLIMBS);
+     mont_mul(a, b) = a*b/R mod N: the product by product scanning into
+     2*NLIMBS limbs, then the word-wise Montgomery reduction, both with a
+     rotating three-word accumulator (the structure of libjbn's __bn_muln
+     and __fp_rdcn, with the modulus as an argument instead of a global
+     constant), then one conditional subtraction (the value is below
+     2N < 2^127).
+   - R mod N is 2^64 doubled 64 times modulo N (2^64 < N when the top limb
+     is not 0; for the small N, 1 doubled 128 times).  The witness a is
+     brought to Montgomery form by 5 doublings and conditional additions
+     of R mod N (a < 32).
+   - The exponent (N-1)/2 = h*2^(n-1): a^h by square-and-multiply over the
+     bits of h below its top one, then n-1 squarings.  The result is -1
+     iff it equals N - (R mod N), -1 in Montgomery form; nothing is
+     converted back.
+
+   The arithmetic (addacc3, muln, rdcn, add_mod, mont_mul) is generic in
+   NLIMBS and common to x86-64 and ARMv8-A; what differs is in the
+   architecture layer A/arch.jazz (x86-64/ and armv8a/): the wide
+   multiplication, the add-with-carry of zero, the top bit and the
+   conditional subtraction with its borrow convention.  The export builds
+   N on two limbs.  The modulus and ninv = -N^(-1) mod 2^64 live in the
+   stack array nn = [n0, .., ninv], loaded before use; everything else
+   is registers.  A shift by a register is written x << (t & 63), its
+   count through one variable; the inline functions only read their
+   arguments, and mont_mul's result goes to fresh variables.              */
+
+require "proth_mont.jazz"
+
+export fn proth_test(reg u64 h n a) -> reg u64 {
+  reg u64 res;
+  res = proth_pass(h, n, a);
+  return res;
+}

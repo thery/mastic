@@ -1,0 +1,605 @@
+/* ladder.jazz -- the ladder of certified primes h*2^n + 1 on a block, in
+   Jasmin: the whole of proth_ladder.c but the fallback (there is none: a
+   stretch without a certified prime is a failure) and the output of the
+   rungs (only their number and the sum of their h are returned).
+
+   export fn ladder_block(out, n, h0, h1, step) -> out, with
+     out[0] = 1 if the block is done, 0 if a stretch had no certified prime
+              (out[5] is then the target h, relative to h0), or the rung of
+              the top descent is more than del_h/2 below h1 (out[5] = h1 - h0),
+              or the arguments are out of range (out[5] = 0)
+     out[1] = the number of rungs
+     out[2] = the sum of the rungs' h modulo 2^64 (to compare with the C)
+     out[3] = the candidates that passed the witness but failed the square test
+     out[4] = the last rung's h
+   Arguments: 2 <= n <= 31, h0 < h1 < 2^(2n+1), step >= 2^(n+1).
+
+   The walk is proth_ladder.c's: targets every del_h = step >> n values of
+   h, the first at step >> (n+1); from a target the search descends over
+   the survivors of the sieve and accepts the first certified candidate; the
+   next target is del_h above it; at the top, when the last rung is more
+   than del_h/2 below h1 (or when there is none: first_h > span), one more
+   descent from h1, whose rung must be within del_h/2 of h1 or the block
+   fails.  The rungs are at most step apart, the first within step/2 of
+   h0*2^n, the last within step/2 of h1*2^n, and there is at least one:
+   this is what makes adjacent blocks chain (ladder_ok of ec/specs.ec), and
+   what the proof is about.
+
+   What has to be right for a rung to be a certified prime: the witness test
+   (proth_pass, proth_mont.jazz) and the square test (bls_square_ok, below).
+   The sieve and the choice of the witness are filters: a wrong one would
+   miss primes and fail the block, never accept a composite.
+
+   The sieve: the odd primes p < L = 1000 (167 of them) and for each the
+   residue c_p with p | (h0 + k)*2^n + 1 <=> k = c_p (mod p); a window of 64
+   candidates below the current h, one bit each, cleared every p-th from
+   (c_p - lo) mod p; x mod p without a division, by the multiplication of
+   Lemire, Kaser and Kurz on the two halves of x (p < 2^16).
+
+   The square test for n <= 31: s = R div 2F, r = R mod 2F with F = 2^(n+v),
+   R = h >> v, v the trailing zeros of h.  If 8s <= 2r - 1 then r^2 - 8s is
+   strictly between (r-1)^2 and r^2, not a square; otherwise r <= 4s < 2^32,
+   so r^2 - 8s fits 64 bits and an integer square root decides.           */
+
+require "proth_mont.jazz"   /* NLIMBS, the architecture layer, the witness test */
+
+param int L = 1000;        /* the sieve's bound */
+param int NP = 167;        /* the odd primes below L */
+param int WIN = 64;        /* the window, one 64-bit word */
+
+/* ---- the sieve ------------------------------------------------------------ */
+
+/* a mod p for a < 2^32, p < 2^16, m = floor((2^64 - 1) / p) + 1: the high
+   half of (m * a mod 2^64) * p */
+inline fn fastmod32(reg u64 a m p) -> reg u64 {
+  reg u64 t hi lo res;
+  t = m;
+  t *= a;
+  hi, lo = mul_wide(t, p);
+  res = hi;                                /* out of the MUL's fixed register */
+  return res;
+}
+
+/* x mod p for any 64-bit x, p < 2^16, t32 = 2^32 mod p: by the two halves */
+inline fn mod_small(reg u64 x m p t32) -> reg u64 {
+  reg u64 hi lo r;
+  hi = x;
+  hi = hi >> 32;
+  lo = x;
+  lo &= 0xFFFFFFFF;
+  r = fastmod32(hi, m, p);
+  r *= t32;
+  lo = fastmod32(lo, m, p);
+  r += lo;                                 /* < p^2 + p < 2^32 */
+  r = fastmod32(r, m, p);
+  return r;
+}
+
+/* the sieve's tables in one array: sp[i] the i-th odd prime p, sp[NP + i]
+   its residue c_p, sp[2*NP + i] the fastmod constant m_p, sp[3*NP + i] 2^32
+   mod p (one pointer register instead of four) */
+
+/* the odd primes below L, by Eratosthenes on a word per odd number */
+fn sieve_primes(reg ptr u64[4 * NP] sp) -> reg ptr u64[4 * NP], reg u64 {
+  stack u64[L / 2] comp_s;
+  reg ptr u64[L / 2] comp;
+  reg u64 i j k z o p;
+  comp = comp_s;
+  z = 0;
+  i = 0;
+  while (i < L / 2) {
+    comp[i] = z;
+    i += 1;
+  }
+  k = 0;
+  i = 3;
+  while (i < L) {
+    j = i;
+    j = j >> 1;
+    p = comp[j];
+    if (p == 0) {
+      sp[k] = i;
+      k += 1;
+      j = i;
+      j *= i;
+      o = 1;
+      while (j < L) {
+        p = j;
+        p = p >> 1;
+        comp[p] = o;
+        j += i;
+        j += i;
+      }
+    }
+    i += 2;
+  }
+  return sp, k;
+}
+
+/* for each prime: c_p, m_p and 2^32 mod p.  c_p solves
+   (h0 + c) * 2^n + 1 = 0 (mod p): c = (p - r1) * t^(-1) mod p with
+   t = 2^n mod p, r1 = (h0 mod p) * t + 1 mod p, t^(-1) = t^(p-2) mod p. */
+fn sieve_init(reg ptr u64[4 * NP] sp, reg u64 n h0 np) -> reg ptr u64[4 * NP] {
+  reg u64 i j p t e b x r1 c k q;
+  i = 0;
+  while (i < np) {
+    p = sp[i];
+    /* t = 2^n mod p by n doublings */
+    t = 1;
+    k = n;
+    while (k != 0) {
+      t += t;
+      x = t;
+      x -= p;
+      t = x if (t >= p);
+      k -= 1;
+    }
+    /* r1 = ((h0 mod p) * t + 1) mod p */
+    r1 = mod_u64(h0, p);
+    r1 *= t;
+    r1 += 1;
+    r1 = mod_u64(r1, p);
+    /* b = t^(p-2) mod p, square and multiply from the top bit of e = p - 2 */
+    e = p;
+    e -= 2;
+    b = 1;
+    k = 63;
+    while (k != 0) {
+      k -= 1;
+      b *= b;
+      b = mod_u64(b, p);
+      x = e;
+      x = x >> (k & 63);
+      x &= 1;
+      if (x != 0) {
+        b *= t;
+        b = mod_u64(b, p);
+      }
+    }
+    /* c = (p - r1) * b mod p */
+    c = p;
+    c -= r1;
+    c = mod_u64(c, p);
+    c *= b;
+    c = mod_u64(c, p);
+    j = i;
+    j += NP;
+    sp[j] = c;
+    /* m = floor((2^64 - 1) / p) + 1 */
+    q = 0xFFFFFFFFFFFFFFFF;
+    q = q / p;
+    q += 1;
+    j += NP;
+    sp[j] = q;
+    /* 2^32 mod p */
+    q = 0x100000000;
+    q = mod_u64(q, p);
+    j += NP;
+    sp[j] = q;
+    i += 1;
+  }
+  return sp;
+}
+
+/* the window [lo, lo + WIN): bit k set <=> no sieving prime divides the
+   candidate at offset lo + k */
+fn sieve_window(reg u64 lo np, reg ptr u64[4 * NP] sp) -> reg u64 {
+  reg u64 win i j p k m t32 one r;
+  win = 0xFFFFFFFFFFFFFFFF;
+  i = 0;
+  while (i < np) {
+    p = sp[i];
+    j = i;
+    j += 2 * NP;
+    m = sp[j];
+    j += NP;
+    t32 = sp[j];
+    r = mod_small(lo, m, p, t32);
+    j = i;
+    j += NP;
+    k = sp[j];
+    k += p;
+    k -= r;
+    r = k;
+    r -= p;
+    k = r if (k >= p);
+    while (k < WIN) {
+      one = 1;
+      one = one << (k & 63);
+      one = !one;
+      win &= one;
+      k += p;
+    }
+    i += 1;
+  }
+  return win;
+}
+
+/* ---- the square test of the criterion ------------------------------------ */
+
+/* floor(sqrt(x)) for a 64-bit x, bit by bit */
+inline fn isqrt64(reg u64 x) -> reg u64 {
+  reg u64 res bit t;
+  res = 0;
+  bit = 0x4000000000000000;                /* 2^62, the top power of four */
+  while (bit != 0) {
+    t = res;
+    t += bit;
+    if (x >= t) {
+      x -= t;
+      res = res >> 1;
+      res += bit;
+    } else {
+      res = res >> 1;
+    }
+    bit = bit >> 2;
+  }
+  return res;
+}
+
+/* 1 if the criterion's square condition holds for N = h*2^n + 1 (n <= 31):
+   s = 0 or r^2 - 8s not a square, with F = 2^(n+v), R = h >> v, s = R div 2F,
+   r = R mod 2F (see the header) */
+inline fn bls_square_ok(reg u64 h n) -> reg u64 {
+  reg u64 v t sh s r r8 ok q rr c;
+  ok = 1;
+  /* v = trailing zeros of h: h != 0 */
+  t = h;
+  t = -t;
+  t &= h;                                  /* the lowest set bit */
+  v = top_bit(t);
+  sh = v;
+  sh += v;
+  sh += n;
+  sh += 1;                                 /* s = h >> (n + 2v + 1), 0 if sh >= 64 */
+  if (sh < 64) {
+    s = h;
+    c = sh;
+    s = s >> (c & 63);
+    if (s != 0) {
+      r = h;
+      c = v;
+      r = r >> (c & 63);                   /* R */
+      t = n;
+      t += v;
+      t += 1;                              /* r = R mod 2^(n+v+1) */
+      q = 1;
+      c = t;
+      q = q << (c & 63);
+      q -= 1;
+      r &= q;
+      r8 = s;
+      r8 = r8 << 3;                        /* 8s */
+      t = r;
+      t += t;                              /* 2r; 8s <= 2r - 1 <=> 8s < 2r */
+      if (t <= r8) {
+        /* 8s >= 2r: r <= 4s < 2^32, r^2 - 8s fits 64 bits */
+        rr = r;
+        rr *= r;
+        if (rr >= r8) {
+          rr -= r8;
+          q = isqrt64(rr);
+          q *= q;
+          if (q == rr) {
+            ok = 0;
+          }
+        }
+      }
+    }
+  }
+  return ok;
+}
+
+/* ---- the witness by residues --------------------------------------------- */
+
+/* the first a in 3, 5, .., 29 (2 as well when n = 2) with (a/N) = -1 for
+   N = h*2^n + 1, or 0 if none: N = 1 (mod 4), so (a/N) = (N/a) for an odd
+   prime a, decided by the squares modulo a; (2/N) from N mod 8 */
+fn witness(reg u64 h n, reg ptr u64[20] wt) -> reg u64 {
+  reg u64 a i j x t one m found c;
+  stack u64[10] prm_s;
+  reg ptr u64[10] prm;
+  prm = prm_s;
+  a = 2; prm[0] = a; a = 3; prm[1] = a; a = 5; prm[2] = a; a = 7; prm[3] = a; a = 11; prm[4] = a;
+  a = 13; prm[5] = a; a = 17; prm[6] = a; a = 19; prm[7] = a; a = 23; prm[8] = a; a = 29; prm[9] = a;
+  found = 0;
+  i = 0;
+  if (n >= 3) {
+    i = 1;                                 /* N = 1 (mod 8): (2/N) = 1 */
+  } else {
+    /* n = 2: N = 4h + 1, (2/N) = -1 iff N = 5 (mod 8) iff h odd */
+    x = h;
+    x &= 1;
+    if (x != 0) {
+      found = 2;
+    }
+    i = 1;
+  }
+  while (i < 10) {
+    a = prm[i];
+    x = mod_u64(h, a);
+    j = i;
+    j += 10;
+    t = wt[j];
+    x *= t;
+    x += 1;
+    x = mod_u64(x, a);                     /* N mod a */
+    if (x != 0) {
+      m = wt[i];
+      one = m;
+      c = x;
+      one = one >> (c & 63);
+      one &= 1;
+      if (one == 0) {
+        found = a;                         /* not a square mod a: (N/a) = -1 */
+        i = 10;                            /* and stop */
+      }
+    }
+    i += 1;
+  }
+  return found;
+}
+
+/* the tables of the witnesses, in one array: wt[i] has bit x set iff x is a
+   non-zero square modulo the i-th prime, wt[10 + i] = 2^n mod that prime */
+fn witness_init(reg ptr u64[20] wt, reg u64 n) -> reg ptr u64[20] {
+  reg u64 a i j x m one k t p c;
+  stack u64[10] prm_s;
+  reg ptr u64[10] prm;
+  prm = prm_s;
+  a = 2; prm[0] = a; a = 3; prm[1] = a; a = 5; prm[2] = a; a = 7; prm[3] = a; a = 11; prm[4] = a;
+  a = 13; prm[5] = a; a = 17; prm[6] = a; a = 19; prm[7] = a; a = 23; prm[8] = a; a = 29; prm[9] = a;
+  i = 1;
+  while (i < 10) {
+    a = prm[i];
+    m = 0;
+    x = 1;
+    while (x < a) {
+      t = x;
+      t *= x;
+      t = mod_u64(t, a);
+      c = t;
+      one = 1;
+      one = one << (c & 63);
+      m |= one;
+      x += 1;
+    }
+    wt[i] = m;
+    t = 1;
+    k = n;
+    while (k != 0) {
+      t += t;
+      p = t;
+      p -= a;
+      t = p if (t >= a);
+      k -= 1;
+    }
+    j = i;
+    j += 10;
+    wt[j] = t;
+    i += 1;
+  }
+  return wt;
+}
+
+/* ---- the walk ------------------------------------------------------------ */
+
+/* 1 if the candidate h0 + h is a certified prime: a witness, the witness
+   test, the square test; counts the square-test rejections in rej */
+fn certified(reg u64 h0 h n, reg ptr u64[20] wt, reg u64 rej) -> reg u64, reg u64 {
+  reg u64 a ok hh;
+  stack u64 s_rej s_hh s_n;
+  ok = 0;
+  hh = h0;
+  hh += h;
+  a = witness(hh, n, wt);
+  if (a != 0) {
+    s_rej = rej; s_hh = hh; s_n = n;       /* the witness test needs the registers */
+    ok = proth_pass(hh, n, a);
+    rej = s_rej; hh = s_hh; n = s_n;
+    if (ok != 0) {
+      ok = bls_square_ok(hh, n);
+      if (ok == 0) {
+        rej += 1;
+      }
+    }
+  }
+  return ok, rej;
+}
+
+/* the largest certified candidate h with low < h <= top, among the sieve's
+   survivors: found = 1 and h, or found = 0 */
+fn search(reg u64 low top h0 n np, reg ptr u64[4 * NP] sp, reg ptr u64[20] wt, reg u64 rej)
+  -> reg u64, reg u64, reg u64 {
+  reg u64 h win win_lo found ok bit t lo z stop;
+  stack u64 s_low s_h0 s_n s_np s_win s_wlo s_h;
+  stack ptr u64[4 * NP] sp_sp;
+  stack ptr u64[20] wt_sp;
+  s_low = low; s_h0 = h0; s_n = n; s_np = np;
+  found = 0;
+  h = top;
+  /* the window just below h: lo = h - (WIN - 1), or 0 for a small h; the
+     sieve needs the registers, so h and the pointers wait on the stack */
+  z = 0;
+  lo = h;
+  lo -= WIN - 1;
+  lo = z if (h < WIN - 1);
+  s_h = h; s_wlo = lo; sp_sp = sp; wt_sp = wt;
+  np = s_np;
+  win = sieve_window(lo, np, sp);
+  h = s_h; win_lo = s_wlo; sp = sp_sp; wt = wt_sp;
+  stop = s_low;                             /* the loop ends when h reaches stop */
+  while (h > stop) {
+    if (h < win_lo) {
+      z = 0;
+      lo = h;
+      lo -= WIN - 1;
+      lo = z if (h < WIN - 1);
+      s_h = h; s_wlo = lo; sp_sp = sp; wt_sp = wt;
+      np = s_np;
+      win = sieve_window(lo, np, sp);
+      h = s_h; win_lo = s_wlo; sp = sp_sp; wt = wt_sp;
+      stop = s_low;
+    }
+    t = h;
+    t -= win_lo;
+    bit = win;
+    bit = bit >> (t & 63);
+    bit &= 1;
+    if (bit != 0) {
+      /* the test needs most registers: only h and rej stay live */
+      s_win = win; s_wlo = win_lo; s_h = h; sp_sp = sp; wt_sp = wt;
+      h0 = s_h0;
+      n = s_n;
+      ok, rej = certified(h0, h, n, wt, rej);
+      h = s_h; win = s_win; win_lo = s_wlo; sp = sp_sp; wt = wt_sp;
+      stop = s_low;
+      if (ok != 0) {
+        found = 1;
+        stop = h;                          /* found: keep h and leave */
+      }
+    }
+    if (found == 0) {
+      h -= 1;
+    }
+  }
+  return found, h, rej;
+}
+
+export fn ladder_block(reg ptr u64[8] out, reg u64 n h0 h1 step) -> reg ptr u64[8] {
+  stack u64[4 * NP] sp_s;
+  reg ptr u64[4 * NP] sp;
+  stack u64[20] wt_s;
+  reg ptr u64[20] wt;
+  stack u64 s_n s_h0 s_span s_del s_np s_rungs s_sum s_rej s_last s_target s_ok;
+  stack ptr u64[8] out_s;
+  reg u64 np span del_h first_h last_h target h found ok rungs sum rej t z c;
+
+  z = 0;
+  out[0] = z; out[1] = z; out[2] = z; out[3] = z; out[4] = z; out[5] = z;
+  /* the output waits on the stack during the work.  A reg ptr array is a
+     value in Jasmin: out_s = out saves its contents, out = out_s restores
+     them, so every write to out must be followed by out_s = out. */
+  out_s = out;
+  ok = 1;
+  /* the arguments */
+  if (n < 2) { ok = 0; }
+  if (n > 31) { ok = 0; }
+  if (h1 <= h0) { ok = 0; }               /* a block has at least one value of h */
+  c = n;
+  c += n;
+  c += 1;
+  z = h1;
+  z = z >> (c & 63);                       /* h1 < 2^(2n+1) */
+  if (z != 0) { ok = 0; }
+  c = n;
+  c += 1;
+  z = step;
+  z = z >> (c & 63);                       /* step >= 2^(n+1): first_h >= 1 */
+  if (z == 0) { ok = 0; }
+  if (ok != 0) {
+    s_n = n; s_h0 = h0;
+    span = h1;
+    span -= h0;
+    s_span = span;
+    c = n;
+    del_h = step;
+    del_h = del_h >> (c & 63);
+    s_del = del_h;
+    c += 1;
+    first_h = step;
+    first_h = first_h >> (c & 63);
+
+    sp = sp_s;
+    sp, np = sieve_primes(sp);
+    s_np = np;
+    n = s_n; h0 = s_h0;
+    sp = sieve_init(sp, n, h0, np);
+    wt = wt_s;
+    n = s_n;
+    wt = witness_init(wt, n);
+
+    rungs = 0; sum = 0; rej = 0;
+    s_rungs = rungs; s_sum = sum; s_rej = rej;
+    last_h = 0;
+    target = first_h;
+    span = s_span;
+    while (target <= span) {
+      s_last = last_h; s_target = target; s_ok = ok;
+      h0 = s_h0; n = s_n; np = s_np; rej = s_rej;
+      found, h, rej = search(last_h, target, h0, n, np, sp, wt, rej);
+      sp = sp_s; wt = wt_s; last_h = s_last; target = s_target; ok = s_ok;
+      s_rej = rej;
+      if (found != 0) {
+        last_h = h;
+        rungs = s_rungs; rungs += 1; s_rungs = rungs;
+        sum = s_sum; h0 = s_h0; sum += h0; sum += h; s_sum = sum;
+        del_h = s_del;
+        target = last_h;
+        target += del_h;
+      } else {
+        ok = 0;
+        out = out_s;
+        out[5] = target;
+        out_s = out;
+        target = s_span;
+        target += 1;                       /* and leave the loop */
+      }
+      span = s_span;
+    }
+    if (ok != 0) {
+      /* the top: within del_h/2 of the end, else one more descent from
+         span -- also when the walk has no rung (first_h > span), so that
+         the block has one; the rung found must itself be within del_h/2 */
+      del_h = s_del;
+      t = del_h;
+      t = t >> 1;
+      t += last_h;
+      rungs = s_rungs;
+      z = 0;
+      t = z if (rungs == 0);
+      span = s_span;
+      if (t < span) {
+        s_last = last_h; s_ok = ok;
+        h0 = s_h0; n = s_n; np = s_np; rej = s_rej;
+        found, h, rej = search(last_h, span, h0, n, np, sp, wt, rej);
+        sp = sp_s; wt = wt_s; last_h = s_last; ok = s_ok;
+        s_rej = rej;
+        if (found != 0) {
+          last_h = h;
+          rungs = s_rungs; rungs += 1; s_rungs = rungs;
+          sum = s_sum; h0 = s_h0; sum += h0; sum += h; s_sum = sum;
+          del_h = s_del;
+          t = del_h;
+          t = t >> 1;
+          t += last_h;
+          span = s_span;
+          if (t < span) {
+            ok = 0;
+            out = out_s;
+            out[5] = span;
+            out_s = out;
+          }
+        } else {
+          ok = 0;
+          span = s_span;
+          out = out_s;
+          out[5] = span;
+          out_s = out;
+        }
+      }
+    }
+    rungs = s_rungs; sum = s_sum; rej = s_rej;
+    out = out_s;
+    out[1] = rungs;
+    out[2] = sum;
+    out[3] = rej;
+    h0 = s_h0;
+    h0 += last_h;
+    out[4] = h0;
+    out_s = out;   /* a reg ptr array is a value: what is written must be saved back */
+  }
+  out = out_s;
+  out[0] = ok;
+  return out;
+}

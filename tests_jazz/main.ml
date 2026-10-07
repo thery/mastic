@@ -130,10 +130,7 @@ let rec pp_item indent (it : pitem L.located) =
       [ indent ^ pp_annotations f.pdf_annot
         ^ (match f.pdf_cc with Some `Export -> "export " | Some `Inline -> "inline " | None -> "")
         ^ "fn " ^ id f.pdf_name ^ "(" ^ String.concat ", " args ^ ")" ^ rty ]
-      @ List.concat_map (pp_instr (indent ^ "  ")) f.pdf_body.pdb_instr
-      @ (match L.unloc f.pdf_body.pdb_ret with
-         | Some vs -> [ indent ^ "  return " ^ String.concat ", " (List.map id vs) ]
-         | None -> [])
+      @ pp_body indent f.pdf_body
   | PParam p -> [ indent ^ "param " ^ pp_type p.ppa_ty ^ " " ^ id p.ppa_name ^ " = " ^ pp_expr p.ppa_init ]
   | PGlobal g ->
       [ indent ^ pp_annotations g.pgd_annot ^ "global " ^ pp_type g.pgd_type ^ " " ^ id g.pgd_name ^ " = "
@@ -146,6 +143,13 @@ let rec pp_item indent (it : pitem L.located) =
   | PNamespace (n, l) -> [ indent ^ "namespace " ^ id n ^ " {" ] @ List.concat_map (pp_item (indent ^ "  ")) l @ [ indent ^ "}" ]
   | PTypeAlias (n, a, t) -> [ indent ^ pp_annotations a ^ "type " ^ id n ^ " = " ^ pp_type t ]
   | PError x -> [ indent ^ "error " ^ pp_err "item" x ]
+  | PFunError (x, body) -> [ indent ^ "fn " ^ pp_err "header" x ] @ pp_body indent body
+
+and pp_body indent body =
+  List.concat_map (pp_instr (indent ^ "  ")) body.pdb_instr
+  @ (match L.unloc body.pdb_ret with
+     | Some vs -> [ indent ^ "  return " ^ String.concat ", " (List.map id vs) ]
+     | None -> [])
 
 let pp_items ast = List.concat_map (pp_item "") ast
 
@@ -227,10 +231,7 @@ let rec t_item (it : pitem L.located) =
         (t_annots f.pdf_annot
          @ List.concat_map (fun (a, (st, vs)) -> t_annots a @ t_stotype st :: List.map (t_ident "arg") vs) f.pdf_args
          @ List.concat_map (fun (a, st) -> t_annots a @ [ t_stotype st ]) (Option.value f.pdf_rty ~default:[])
-         @ List.map t_instr f.pdf_body.pdb_instr
-         @ (match L.unloc f.pdf_body.pdb_ret with
-            | Some vs -> [ N ("return", L.loc f.pdf_body.pdb_ret, List.map (t_ident "var") vs) ]
-            | None -> []))
+         @ t_body f.pdf_body)
   | PParam p -> n ("param:" ^ id p.ppa_name) [ t_type p.ppa_ty; t_expr p.ppa_init ]
   | PGlobal g ->
       n ("global:" ^ id g.pgd_name)
@@ -243,6 +244,13 @@ let rec t_item (it : pitem L.located) =
   | PNamespace (x, l) -> n ("namespace:" ^ id x) (List.map t_item l)
   | PTypeAlias (x, a, t) -> n ("typealias:" ^ id x) (t_annots a @ [ t_type t ])
   | PError _ -> E
+  | PFunError (_, body) -> n "fn" (E :: t_body body)
+
+and t_body body =
+  List.map t_instr body.pdb_instr
+  @ (match L.unloc body.pdb_ret with
+     | Some vs -> [ N ("return", L.loc body.pdb_ret, List.map (t_ident "var") vs) ]
+     | None -> [])
 
 (* ------------------------------------------------------------------------ *)
 (* inclusion of ASTs, as Ast.included_prog in test/: an error node is
@@ -436,6 +444,7 @@ let raw file =
       List.iter (fun (k, b, e) -> Printf.printf "S\t%s\t%d\t%d\n" k b e) spans;
       List.iter (fun (it : pitem L.located) ->
         let kind = match L.unloc it with PError _ -> "Error" | _ -> "Item" in
+        (* a PFunError is not an Error: its body is recovered *)
         let b, e = match L.unloc it with
           | PError x -> error_span x
           | _ -> (L.loc it).loc_bchar, (L.loc it).loc_echar in

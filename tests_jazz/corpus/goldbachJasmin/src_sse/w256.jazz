@@ -1,0 +1,76 @@
+from S require "sieve.jazz"
+
+/* THE SSE CONTEXT.
+
+   A 256-bit word is a pair of 128-bit ones.  Three primitives are enough for
+   the whole pre-sieve, and they are chosen so that ONE statement of the AVX2
+   source is ONE call here -- which is what makes the equivalence proof cost
+   two lines per site.
+
+   The halves are passed already read, as array slices.  That is what keeps
+   the count at three: the sixteen pre-sieve tables have sixteen different
+   types, and a `load' primitive would have needed one variant per table. */
+
+namespace W256 {
+
+  type t = u128[2];
+
+  /* `tmp = tab.[:u256 i]' */
+  inline fn mk (reg u128 lo, reg u128 hi) -> reg t {
+    reg t r;
+    r[0] = lo;
+    r[1] = hi;
+    return r;
+  }
+
+  /* `tmp &= tab.[:u256 i]' */
+  inline fn landH (reg t x, reg u128 lo, reg u128 hi) -> reg t {
+    reg t r;
+    r[0] = x[0] & lo;
+    r[1] = x[1] & hi;
+    return r;
+  }
+
+  /* `sieve.[:u256 o] = tmp' -- the sieve is the only array written, so one
+     variant suffices */
+  inline fn storeS (reg ptr Sieve::t s, reg u64 off, inline int d, reg t x)
+      -> reg ptr Sieve::t {
+    s.[:u128 off + d] = x[0];
+    s.[:u128 off + d + 16] = x[1];
+    return s;
+  }
+
+  /* `x = #set0_256()' */
+  inline fn zero () -> reg t {
+    reg t r;
+    r[0] = #set0_128();
+    r[1] = #set0_128();
+    return r;
+  }
+
+  /* `x |= y' */
+  inline fn lor (reg t x, reg t y) -> reg t {
+    reg t r;
+    r[0] = x[0] | y[0];
+    r[1] = x[1] | y[1];
+    return r;
+  }
+
+  /* `x = #VPSLL_4u64(x, k)'.  The shift is LANE-WISE on 64-bit lanes, so on
+     a pair of halves it is the same shift applied to each -- which is what
+     makes `bits128' commute with it, exactly as it does with `&'. */
+  inline fn sll (reg t x, inline int k) -> reg t {
+    reg t r;
+    r[0] = #VPSLL_2u64(x[0], k);
+    r[1] = #VPSLL_2u64(x[1], k);
+    return r;
+  }
+
+  /* `x = #VPSRL_4u64(x, k)' */
+  inline fn srl (reg t x, inline int k) -> reg t {
+    reg t r;
+    r[0] = #VPSRL_2u64(x[0], k);
+    r[1] = #VPSRL_2u64(x[1], k);
+    return r;
+  }
+}
