@@ -497,7 +497,7 @@ pgexpr:
 | LBRACE es = rtuple(pexpr) RBRACE { GEarray es }
 
 pglobal:
-| pgd_annot=annotations pgd_type=ptype pgd_name=ident EQ pgd_val=pgexpr SEMICOLON
+| pgd_annot=annotations pgd_type=loc(ptype_r) pgd_name=ident EQ pgd_val=pgexpr SEMICOLON
   { { pgd_annot ; pgd_type ; pgd_name ; pgd_val  } }
 
 (* -------------------------------------------------------------------- *)
@@ -530,6 +530,7 @@ top:
     { Syntax.PNamespace (name, pfs) }
 | e=ERROR_TOKEN { Item.of_token e }
 | annotations call_conv? FN e=ERROR_TOKEN body=pfunbody { Syntax.PFunError (e, body) }
+| e=ERROR_TOKEN body=pfunbody { Syntax.PFunError (e, body) }
 | e=INSTR_ERROR_TOKEN { Item.of_token e }
 | e=ITEM_ERROR_TOKEN { Item.of_token e }
 (* -------------------------------------------------------------------- *)

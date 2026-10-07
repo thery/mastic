@@ -323,12 +323,15 @@ module Recovery = struct
 
   (* the state waits for an expression, a type or a left value: an item
      expects one next, and no item is complete *)
-  let expects_expr_or_type productions =
-    (* the next symbol, after the ones that can be empty (castop in x + y) *)
+  (* the next symbol of an item, after the ones that can be empty (castop
+     in x + y) *)
+  let next (_, rhs, _, pos) =
     let rec skip = function
       | I.X (I.N n) :: rest when I.nullable n && rest <> [] -> skip rest
       | l -> l in
-    let next (_, rhs, _, pos) = List.nth_opt (skip (List.filteri (fun i _ -> i >= pos) rhs)) 0 in
+    List.nth_opt (skip (List.filteri (fun i _ -> i >= pos) rhs)) 0
+
+  let expects_expr_or_type productions =
     List.for_all (fun i -> next i <> None) productions &&
     List.exists (fun i -> match next i with
       | Some (I.X (I.N (I.N_pexpr | I.N_pexpr_noarr | I.N_ptype | I.N_plvalue))) -> true
@@ -342,6 +345,12 @@ module Recovery = struct
     | I.X (I.N I.N_module_), 0 -> true
     | I.X (I.N I.N_top), 3 -> (match rhs with I.X (I.T I.T_NAMESPACE) :: _ -> true | _ -> false)
     | _ -> false
+
+  (* the state waits for a block, or the body of a function *)
+  let expects_block productions =
+    List.exists (fun i -> match next i with
+      | Some (I.X (I.N (I.N_pblock | I.N_pblock_r | I.N_pfunbody))) -> true
+      | _ -> false) productions
 
   (* between two instructions of a block *)
   let is_instr_start (lhs, rhs, _, pos) =
@@ -384,6 +393,7 @@ module Recovery = struct
     let marked m t s =
       let b = next_token.b in
       GenerateToken { s; b; e = b; t = t Mastic.Error.(mkLexError (loc m b b)) } in
+    let lbrace () = GenerateToken { s = "{"; t = Parser.LBRACE; b = next_token.b; e = next_token.b } in
     let instr_error () = marked instr_marker (fun x -> Parser.INSTR_ERROR_TOKEN x) "(error)" in
     (* between two instructions of a block, or two items of a namespace *)
     let in_block = List.exists (fun i -> is_instr_start i || is_item_start i) productions in
@@ -399,7 +409,8 @@ module Recovery = struct
       match accept Parser.[SEMICOLON; RPAREN; RBRACKET; RBRACE; LBRACE] with
       | Some x -> GenerateToken x
       | None ->
-          if in_block then GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }
+          if expects_block productions then lbrace ()
+          else if in_block then GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }
           else if generation_streak <= 1 then GenerateHole
           else instr_error () in
     (* finish the current instruction (at a token that begins an
@@ -413,7 +424,8 @@ module Recovery = struct
       match accept Parser.[SEMICOLON; RPAREN; RBRACKET] with
       | Some x -> GenerateToken x
       | None ->
-          if next_token.t <> Parser.SEMICOLON && generation_streak <= 1 then
+          if expects_block productions then lbrace ()
+          else if next_token.t <> Parser.SEMICOLON && generation_streak <= 1 then
             GenerateToken { s = ";"; t = Parser.SEMICOLON; b = next_token.b; e = next_token.b }
           else if generation_streak <= 2 then GenerateHole
           else instr_error () in
@@ -432,6 +444,12 @@ module Recovery = struct
     | Parser.EOF -> finish_item ()
     | t when item_restart t next_token.b -> finish_item ()
     | t when instr_restart t next_token.b -> finish_instr ()
+    | Parser.RBRACE -> finish_instr ()
+    | Parser.LBRACE when generation_streak = 0 ->
+        (* a block that does not fit: what is before it is broken, a hole
+           folds it into an error, after which the block may fit (as the
+           body of a function whose header is broken, for instance) *)
+        GenerateHole
     | _ ->
     match reducible_productions with
     | p :: _ when List.exists is_expr productions -> Reduce p
