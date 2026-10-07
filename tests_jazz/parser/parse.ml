@@ -486,6 +486,7 @@ and merge_instr = function
   | PIIf (c, b1, b2) -> PIIf (c, merge_block b1, Option.map merge_block b2)
   | PIFor (v, r, b) -> PIFor (v, r, merge_block b)
   | PIWhile (b1, c, b2) -> PIWhile (Option.map merge_block b1, c, Option.map merge_block b2)
+  | PIErrorBlock (e, b) -> PIErrorBlock (e, merge_block b)
   | i -> i
 
 (* One resilient parse: the lexer returns error tokens instead of raising;

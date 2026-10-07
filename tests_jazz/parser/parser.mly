@@ -396,6 +396,8 @@ pinstr_r:
     { Location.unloc (snd (Instr.of_token e)) }
 | e=INSTR_ERROR_TOKEN
     { Location.unloc (snd (Instr.of_token e)) }
+| e=ERROR_TOKEN b=pblock
+    { PIErrorBlock (e, b) }
 
 pif:
 | IF c=pexpr i1s=pblock

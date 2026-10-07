@@ -395,6 +395,8 @@ type pinstr_r =
       (** reg u32 x = 42; *)
   | PIError     of Mastic.Error.t
       (** error node *)
+  | PIErrorBlock of Mastic.Error.t * pblock
+      (** error node: an instruction whose head (if, for, while) is broken *)
 
 and pblock_r = pinstr list
 and fordir   = [ `Down | `Up ]

@@ -119,6 +119,7 @@ let rec pp_instr indent ((a, i) : pinstr) =
   | PIdeclinit (st, l) ->
       line (pp_stotype st ^ " " ^ String.concat ", " (List.map (fun d -> let x, e = L.unloc d in id x ^ " = " ^ pp_expr e) l))
   | PIError x -> line (pp_err "instr" x)
+  | PIErrorBlock (x, b) -> line (pp_err "head" x) @ block b
 
 let rec pp_item indent (it : pitem L.located) =
   match L.unloc it with
@@ -222,6 +223,7 @@ let rec t_instr ((a, i) : pinstr) =
   | PIdeclinit (st, l) ->
       n "declinit" (t_stotype st :: List.concat_map (fun d -> let x, e = L.unloc d in [ t_ident "var" x; t_expr e ]) l)
   | PIError _ -> E
+  | PIErrorBlock (_, b) -> n "?" [ E; block b ]
 
 let rec t_item (it : pitem L.located) =
   let n l k = N (l, L.loc it, k) in
