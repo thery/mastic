@@ -177,6 +177,7 @@ type pexpr_r =
   | PEOp1    of peop1 * pexpr
   | PEOp2    of peop2 * (pexpr * pexpr)
   | PEIf of pexpr * pexpr * pexpr
+  | PEError  of Mastic.Error.t  (* error node, for the error-resilient parser *)
 
 and pexpr = pexpr_r L.located
 
@@ -289,6 +290,7 @@ module SPrinter = struct
       optparent fmt prio p "(";
       F.fprintf fmt "%a ? %a : %a" (pp_expr_rec p) e1 (pp_expr_rec p) e2 (pp_expr_rec p) e3;
       optparent fmt prio p ")"
+    | PEError _ -> F.fprintf fmt "<error>"
 
   and pp_mem_access fmt (al, ty, e) =
     let pp_size fmt ws = Format.fprintf fmt ":%a " pp_ws ws in
@@ -329,6 +331,7 @@ and pannotations = pannotation list
 (* -------------------------------------------------------------------- *)
 and psizetype = TypeWsize of swsize | TypeSizeAlias of pident
 and ptype_r = TBool | TInt | TWord of swsize | TArray of psizetype * pexpr | TAlias of pident
+  | TError of Mastic.Error.t  (* error node *)
 and ptype   = ptype_r L.located
 
 (* -------------------------------------------------------------------- *)
@@ -345,6 +348,7 @@ type plvalue_r =
   | PLVar   of pident
   | PLArray of [`Aligned|`Unaligned] option * arr_access * swsize L.located option * pident * pexpr * pexpr option
   | PLMem   of mem_access
+  | PLError of Mastic.Error.t  (* error node *)
 
 type plvalue = plvalue_r L.located
 
@@ -389,6 +393,8 @@ type pinstr_r =
       (** reg u32 x y z; *)
   | PIdeclinit  of pstotype * (pident * pexpr) L.located list
       (** reg u32 x = 42; *)
+  | PIError     of Mastic.Error.t
+      (** error node *)
 
 and pblock_r = pinstr list
 and fordir   = [ `Down | `Up ]
@@ -476,7 +482,76 @@ type pitem =
   | Prequire of (pident option * prequire list)
   | PNamespace of pident * pitem L.located list
   | PTypeAlias of pident * pannotations * ptype
+  | PError of Mastic.Error.t  (* error node *)
 
 (* -------------------------------------------------------------------- *)
 type pprogram = pitem L.located list
 
+
+(* -------------------------------------------------------------------- *)
+(* Error nodes, for the error-resilient parser (Mastic): each one is
+   registered with Mastic, which builds it from an error token (of_token,
+   used in the grammar) and turns a correct node into a piece of an error
+   (build_token, used when an item of the parser stack is folded into an
+   error, see Parse.Recovery.reduce_as_parse_error) *)
+
+let loc_of_error x =
+  let b, e = Mastic.Error.span x in
+  Location.make b e
+
+let pp_any what fmt _ = Format.fprintf fmt "<%s>" what
+
+module Expr = struct
+  type Mastic.Error.t_ += Expr of pexpr
+  let Mastic.Error.Registered { of_token; build_token; _ } =
+    Mastic.Error.register "pexpr" {
+      Mastic.Error.pp = SPrinter.pp_expr;
+      match_ast = (function { L.pl_desc = PEError x; _ } -> Some x | _ -> None);
+      match_error = (function Expr x -> Some x | _ -> None);
+      build_ast = (fun x -> L.mk_loc (loc_of_error x) (PEError x));
+      build_error = (fun x -> Expr x) }
+end
+
+module Type = struct
+  type Mastic.Error.t_ += Type of ptype
+  let Mastic.Error.Registered { of_token; build_token; _ } =
+    Mastic.Error.register "ptype" {
+      Mastic.Error.pp = pp_any "type";
+      match_ast = (function { L.pl_desc = TError x; _ } -> Some x | _ -> None);
+      match_error = (function Type x -> Some x | _ -> None);
+      build_ast = (fun x -> L.mk_loc (loc_of_error x) (TError x));
+      build_error = (fun x -> Type x) }
+end
+
+module Lvalue = struct
+  type Mastic.Error.t_ += Lvalue of plvalue
+  let Mastic.Error.Registered { of_token; build_token; _ } =
+    Mastic.Error.register "plvalue" {
+      Mastic.Error.pp = pp_any "lvalue";
+      match_ast = (function { L.pl_desc = PLError x; _ } -> Some x | _ -> None);
+      match_error = (function Lvalue x -> Some x | _ -> None);
+      build_ast = (fun x -> L.mk_loc (loc_of_error x) (PLError x));
+      build_error = (fun x -> Lvalue x) }
+end
+
+module Instr = struct
+  type Mastic.Error.t_ += Instr of pinstr
+  let Mastic.Error.Registered { of_token; build_token; _ } =
+    Mastic.Error.register "pinstr" {
+      Mastic.Error.pp = pp_any "instr";
+      match_ast = (function (_, { L.pl_desc = PIError x; _ }) -> Some x | _ -> None);
+      match_error = (function Instr x -> Some x | _ -> None);
+      build_ast = (fun x -> [], L.mk_loc (loc_of_error x) (PIError x));
+      build_error = (fun x -> Instr x) }
+end
+
+module Item = struct
+  type Mastic.Error.t_ += Item of pitem
+  let Mastic.Error.Registered { of_token; build_token; _ } =
+    Mastic.Error.register "pitem" {
+      Mastic.Error.pp = pp_any "item";
+      match_ast = (function PError x -> Some x | _ -> None);
+      match_error = (function Item x -> Some x | _ -> None);
+      build_ast = (fun x -> PError x);
+      build_error = (fun x -> Item x) }
+end

@@ -83,6 +83,14 @@
 %token <string> NID
 %token <Syntax.int_representation> INT
 %token <string> STRING
+
+(* error tokens, for the error-resilient parser (Mastic): ERROR_TOKEN
+   stands for a broken expression, type, left value, instruction or item;
+   INSTR_ERROR_TOKEN only for a broken instruction (or item), and
+   ITEM_ERROR_TOKEN only for a broken item (see Parse.Recovery) *)
+%token <Mastic.Error.t> ERROR_TOKEN
+%token <Mastic.Error.t> INSTR_ERROR_TOKEN
+%token <Mastic.Error.t> ITEM_ERROR_TOKEN
 %nonassoc COLON QUESTIONMARK
 %left PIPEPIPE
 %left AMPAMP
@@ -173,6 +181,7 @@ ptype_r:
 
 ptype:
 | x=loc(ptype_r) { x }
+| e=ERROR_TOKEN { Type.of_token e }
 
 swsize:
 | s=SWSIZE { s }
@@ -292,12 +301,14 @@ pexpr_noarr_r(parent):
 
 pexpr_noarr:
 | e=loc(pexpr_noarr_r(pexpr_noarr)) { e }
+| e=ERROR_TOKEN { Expr.of_token e }
 
 pexpr_r:
 | e = pexpr_noarr_r(pexpr) { e }
 
 pexpr:
 | e=loc(pexpr_r) { e }
+| e=ERROR_TOKEN { Expr.of_token e }
 
 (* -------------------------------------------------------------------- *)
 peqop:
@@ -332,6 +343,7 @@ plvalue_r:
 
 plvalue:
 | x=loc(plvalue_r) { x }
+| e=ERROR_TOKEN { Lvalue.of_token e }
 
 (* ** Control instructions
  * -------------------------------------------------------------------- *)
@@ -379,6 +391,11 @@ pinstr_r:
 
 | ty=stor_type vs=separated_nonempty_list(COMMA?, var) SEMICOLON
     { PIdecl (ty, vs) }
+
+| e=ERROR_TOKEN
+    { Location.unloc (snd (Instr.of_token e)) }
+| e=INSTR_ERROR_TOKEN
+    { Location.unloc (snd (Instr.of_token e)) }
 
 pif:
 | IF c=pexpr i1s=pblock
@@ -511,6 +528,9 @@ top:
     { Syntax.PTypeAlias (name, a, ty)}
 | NAMESPACE name = ident LBRACE pfs = loc(top)* RBRACE
     { Syntax.PNamespace (name, pfs) }
+| e=ERROR_TOKEN { Item.of_token e }
+| e=INSTR_ERROR_TOKEN { Item.of_token e }
+| e=ITEM_ERROR_TOKEN { Item.of_token e }
 (* -------------------------------------------------------------------- *)
 module_:
 | pfs=loc(top)* EOF
