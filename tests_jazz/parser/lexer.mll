@@ -12,6 +12,19 @@
     done
 
 
+  (* Error recovery (Parse.resilient): when [recovering] is set, the lexer
+     never raises; it returns ERROR_TOKEN for the text it cannot read, and
+     records the error in [errors]. An unterminated comment is an error for
+     its opening "/*", and lexing restarts just after it (the lexbuf must
+     hold the whole text). An unterminated string needs nothing special:
+     its opening quote is an invalid character. *)
+  let recovering = ref false
+  let errors : (Lexing.position * string) list ref = ref []
+
+  let error_token msg (b : Lexing.position) (e : Lexing.position) text =
+    errors := (b, msg) :: !errors;
+    ERROR_TOKEN Mastic.Error.(mkLexError (loc text b e))
+
   let unterminated_comment loc =
     raise (S.ParseError (loc, Some "unterminated comment"))
 
@@ -23,6 +36,16 @@
     try Scanf.unescaped s with
     | Scanf.Scan_failure msg ->
       raise (Syntax.ParseError (loc, Some (Format.asprintf "ill-formed string (%s)" msg)))
+
+  (* the comment that starts at [b] (after "/*" that ends at [e]) is not
+     terminated: go back to [e] *)
+  let unterminated_comment_token lexbuf (b : Lexing.position) (e : Lexing.position) =
+    let open Lexing in
+    lexbuf.lex_curr_pos <- e.pos_cnum - lexbuf.lex_abs_pos;
+    lexbuf.lex_start_pos <- b.pos_cnum - lexbuf.lex_abs_pos;
+    lexbuf.lex_curr_p <- e;
+    lexbuf.lex_start_p <- b;
+    error_token "unterminated comment" b e "/*"
 
   let _keywords = [
     "type"  , TYPE   ;
@@ -159,12 +182,19 @@ rule main = parse
   | newline { Lexing.new_line lexbuf; main lexbuf }
   | blank+  { main lexbuf }
 
-  | "/*" { comment 0 lexbuf; main lexbuf }
+  | "/*" { let b = Lexing.lexeme_start_p lexbuf and e = Lexing.lexeme_end_p lexbuf in
+           match comment 0 lexbuf with
+           | () -> main lexbuf
+           | exception (S.ParseError _) when !recovering -> unterminated_comment_token lexbuf b e }
 
   | "//" [^'\n']* newline { Lexing.new_line lexbuf; main lexbuf }
   | "//" [^'\n']* eof     { main lexbuf }
 
-  | '"' (([^'"' '\\']|'\\' _)* as s) '"' { increment_newline s lexbuf; STRING (unescape (L.of_lexbuf lexbuf) s) }
+  | '"' (([^'"' '\\']|'\\' _)* as s) '"' { increment_newline s lexbuf;
+      match unescape (L.of_lexbuf lexbuf) s with
+      | s -> STRING s
+      | exception (S.ParseError (_, msg)) when !recovering ->
+          error_token (Option.default "ill-formed string" msg) lexbuf.lex_start_p lexbuf.lex_curr_p (Lexing.lexeme lexbuf) }
 
   | (digit+(('_')+ digit+)*) as s
 
@@ -226,7 +256,9 @@ rule main = parse
   | "#unaligned" { UNALIGNED   }
   | "#aligned" { ALIGNED   }
 
-  | _ as c  { invalid_char (L.of_lexbuf lexbuf) c }
+  | _ as c  { if !recovering then
+                error_token (Printf.sprintf "invalid char: `%c'" c) lexbuf.lex_start_p lexbuf.lex_curr_p (String.make 1 c)
+              else invalid_char (L.of_lexbuf lexbuf) c }
   | eof     { EOF }
 
 (* -------------------------------------------------------------------- *)
