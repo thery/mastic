@@ -1,0 +1,6 @@
+typeabbrev x (pred).
+
+symb f x.
+f.
+
+main :- f.

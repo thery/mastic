@@ -1,0 +1,153 @@
+/*        Hierarchy Builder: algebraic hierarchies made easy
+    This software is released under the terms of the MIT license              */
+
+namespace builders {
+
+func begin context-decl ->.
+begin CtxSkel :-
+  std.assert!(coq.next-synterp-action (begin-module Name)) "synterp code did not open module",
+  if-verbose (coq.say {header} "begin module for builders"),
+  log.coq.env.begin-module Name none,
+
+  builders.private.factory CtxSkel IDF GRF,
+
+  % the Super module to access operations/axioms shadowed by the ones in the factory
+  if-verbose (coq.say {header} "begin module Super"),
+  log.coq.env.begin-module "Super" none,
+  if (GRF = indt FRecord) (std.do! [
+    std.forall {coq.env.projections FRecord}
+      builders.private.declare-shadowed-constant,
+  ]) true,
+  if-verbose (coq.say {header} "ended module Super"),
+  log.coq.env.end-module-name "Super" _,
+
+  log.coq.env.begin-section Name,
+  if-verbose (coq.say {header} "postulating factories"),
+  builders.private.postulate-factories Name IDF CtxSkel
+.
+
+}
+
+% "end" is a keyword, be put it in the namespace by hand
+func builders.end.
+builders.end :- std.do! [
+  current-mode (builder-from _ _ _ ModName),
+
+  log.coq.env.end-section-name ModName,
+
+  findall-builders LFIL,
+
+  std.fold LFIL [] builders.private.declare-1-builder Clauses,
+
+  if (Clauses = [])
+     (coq.error "No builders to declare, did you forget HB.instance?")
+     true,
+
+  std.findall (abbrev-to-export F_ N_ A_) ExportClauses,
+  coq.env.current-path CurModPath,
+  std.filter ExportClauses (export.private.abbrev-in-module CurModPath) ExportClausesFiltered,
+
+  % TODO: Do we need this module?
+  std.assert!(coq.next-synterp-action (begin-module Name)) "synterp code did not open module",
+  log.coq.env.begin-module Name none,
+
+  acc-clauses current Clauses,
+  acc-clauses current ExportClausesFiltered,
+  
+  log.coq.env.end-module-name Name Exports,
+  log.coq.env.end-module-name ModName _,
+  export.module {calc (ModName ^ "." ^ Name)} Exports,
+
+
+].
+
+/* ------------------------------------------------------------------------- */
+/* ----------------------------- private code ------------------------------ */
+/* ------------------------------------------------------------------------- */
+
+func factory.cdecl->w-mixins context-decl -> w-mixins context-decl.
+
+namespace builders.private {
+
+% [declare-1-builder (builder _ F M B) From MoreFrom] Given B of type FB, it
+% declares all the new builders F to M via B.
+% From holds the (from F Mi Bi) new clauses during folding.
+:index (1)
+func declare-1-builder builder, list prop -> list prop.
+declare-1-builder (builder _ SrcFactory TgtMixin _) FromClauses FromClauses :- (FromClauses => from SrcFactory TgtMixin _), !,
+  if-verbose (coq.say {header} "skipping duplicate builder from"
+    {nice-gref->string SrcFactory} "to" {nice-gref->string TgtMixin}).
+declare-1-builder (builder _ SrcFactory TgtMixin B) FromClauses [from SrcFactory TgtMixin B|FromClauses] :-
+  if-verbose (coq.say {header} "declare builder from"
+    {nice-gref->string SrcFactory} "to" {nice-gref->string TgtMixin}).
+
+% We add breviations for all constants what will be shadowed by projections
+% if the factory.
+:index (1)
+func declare-shadowed-constant option constant ->.
+declare-shadowed-constant none.
+declare-shadowed-constant (some C) :-
+  coq.gref->id (const C) Id,
+  std.forall {coq.locate-all Id} (declare-shadowed-located Id).
+
+:index (_ 1)
+func declare-shadowed-located string, located.
+declare-shadowed-located Id (loc-gref GR) :-
+  @global! => log.coq.notation.add-abbreviation Id 0 (global GR) ff _.
+declare-shadowed-located Id (loc-abbreviation Abbrev) :-
+  coq.notation.abbreviation-body Abbrev NArgs T,
+  @global! => log.coq.notation.add-abbreviation Id NArgs T ff _.
+
+func postulate-factory-abbrev term, list term, id, factoryname -> term.
+postulate-factory-abbrev TheType Params Name Falias TheFactory :- std.do! [
+  std.assert-ok! (factory-alias->gref Falias F) "HB",
+  phant-abbrev F _ Fabv,
+  coq.notation.abbreviation Fabv {std.append Params [TheType]} Package,
+  Msg is "Unable to declare factory " ^ Name,
+  std.assert-ok! (coq.typecheck-ty Package _) Msg,
+  log.coq.env.add-section-variable-noimplicits Name Package C,
+  TheFactory = global (const C),
+].
+
+% Only record fields can be exported as operations.
+:index (1)
+func define-factory-operations term, list term, term, gref.
+define-factory-operations TheType Params TheFactory (indt I) :- !,
+  coq.env.indt I _ NIParams _ _ _ _,
+  NHoles is NIParams - 1 - {std.length Params},
+  coq.env.projections I PL,
+  std.forall PL (define-factory-operation TheType Params TheFactory NHoles).
+define-factory-operations _ _ _ _.
+
+:index (_ _ _ _ 1)
+func define-factory-operation term, list term, term, int, option constant.
+define-factory-operation _ _ _ _ none.
+define-factory-operation TheType Params TheFactory NHoles (some P) :-
+  coq.mk-n-holes NHoles Holes,
+  std.append Holes [TheFactory] Holes_Factory,
+  std.append Params [TheType|Holes_Factory] Args,
+  T = app[global (const P)|Args],
+  std.assert-ok! (coq.typecheck T _) "Illtyped applied factory operation",
+  coq.gref->id (const P) Name,
+  @local! => log.coq.notation.add-abbreviation Name 0 T ff _.
+
+func factory context-decl -> string, gref.
+factory (context-item IDF _ T _ _\ context-end) IDF GR :- !,
+  coq.safe-dest-app T (global GR) _.
+factory (context-item _ _ _ _ R) IDF GR :- !, pi x\ factory (R x) IDF GR.
+factory _ _ _ :- !, coq.error "the last context item is not a factory".
+
+func postulate-factories id, string, context-decl.
+postulate-factories ModName IDF CDecl :-
+  factory.cdecl->w-mixins CDecl (pr FLwP _),
+  context.declare.params-key FLwP ParamsSection FKey FLwA,
+  std.assert! (FLwA = [triple GRF _ _])
+    "HB: cannot declare builders for more than one factory at a time",
+  gref->deps GRF DepswPRaw,
+  context.declare.mixins FKey ParamsSection DepswPRaw _ _ _,
+  std.map ParamsSection triple_2 FParams,
+  postulate-factory-abbrev FKey FParams IDF GRF TheFactory,
+  define-factory-operations FKey FParams TheFactory GRF,
+  acc-clause current (current-mode (builder-from FKey TheFactory GRF ModName)).
+
+}

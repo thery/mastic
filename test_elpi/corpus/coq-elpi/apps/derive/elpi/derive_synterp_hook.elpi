@@ -1,0 +1,9 @@
+/* Entry point for derive extensions                                         */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+pred derivation string, string -> derive.
+pred export modpath.
+pred dep1 -> string, string.
+data derive.
+symb derive : string -> (func -> list (pred)) -> prop -> derive.

@@ -1,0 +1,116 @@
+% to be traced
+
+:index(_ _ _ _ _ _ _ _ 1)
+pred p int, int, int, int, int, int, int, int, int.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 2.
+p X X X X X X X X 1.
+
+pred iter int, (pred).
+iter N P :- N > 0, !, P, M is N - 1, iter M P.
+iter 0 _.
+
+main :-
+  iter 999999 (p 1 1 1 1 1 1 1 1 1).

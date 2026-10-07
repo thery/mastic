@@ -1,0 +1,99 @@
+% cxx.elpi — printing the target language as C++.
+
+namespace adjudge {
+
+func infix-operator string.
+infix-operator S :- std.mem! ["+", "-", "*", "/", "<", "<=", ">", ">="] S.
+
+% expr-string E S: E parenthesized as an operand; bare-string E S: E at top level.
+func expr-string expr -> string.
+expr-string (call F [A, B]) S :- infix-operator F, !, bare-string (call F [A, B]) S0, S is "(" ^ S0 ^ ")".
+expr-string E S :- bare-string E S.
+
+func bare-string expr -> string.
+bare-string (id S) S :- !.
+bare-string (lit S) S :- !.
+bare-string (at A I) S :- !, expr-string A SA, bare-string I SI, S is SA ^ "[" ^ SI ^ "]".
+bare-string (call "neg" [A]) S :- !, expr-string A SA, S is "-" ^ SA.
+bare-string (call F [A, B]) S :- infix-operator F, !, expr-string A SA, expr-string B SB, S is SA ^ " " ^ F ^ " " ^ SB.
+bare-string (call F Args) S :- std.map Args bare-string Ss, std.string.concat ", " Ss SA, S is F ^ "(" ^ SA ^ ")".
+
+func stmt-lines string, stmt -> list string.
+stmt-lines In (declare T N E) [L] :- !, bare-string E S, L is In ^ T ^ " " ^ N ^ " = " ^ S ^ ";".
+stmt-lines In (allocate T N) [L] :- !, L is In ^ T ^ " " ^ N ^ "{};".
+stmt-lines In (assign A B) [L] :- !, bare-string A SA, bare-string B SB, L is In ^ SA ^ " = " ^ SB ^ ";".
+stmt-lines In (increment A B) [L] :- !, bare-string A SA, bare-string B SB, L is In ^ SA ^ " += " ^ SB ^ ";".
+stmt-lines In (push Tape E) [L] :- !, bare-string E S, L is In ^ Tape ^ ".push_back(" ^ S ^ ");".
+stmt-lines In (pop Tape E) [L] :- !, bare-string E S, L is In ^ S ^ " = " ^ Tape ^ ".back(); " ^ Tape ^ ".pop_back();".
+stmt-lines In (return E) [L] :- !, bare-string E S, L is In ^ "return " ^ S ^ ";".
+stmt-lines In (branch C T E) Ls :- !,
+  bare-string C SC, In2 is In ^ "    ",
+  block-lines In2 T LT, block-lines In2 E LE,
+  L1 is In ^ "if (" ^ SC ^ ") {", L2 is In ^ "} else {", L3 is In ^ "}",
+  std.flatten [[L1], LT, [L2], LE, [L3]] Ls.
+stmt-lines In (loop I Lo Hi B) Ls :- !,
+  bare-string Lo SL, bare-string Hi SH, In2 is In ^ "    ", block-lines In2 B LB,
+  L1 is In ^ "for (std::size_t " ^ I ^ " = " ^ SL ^ "; " ^ I ^ " < " ^ SH ^ "; ++" ^ I ^ ") {",
+  L2 is In ^ "}",
+  std.flatten [[L1], LB, [L2]] Ls.
+stmt-lines In (loop-back I Lo Hi B) Ls :-
+  bare-string Lo SL, bare-string Hi SH, In2 is In ^ "    ", block-lines In2 B LB,
+  L1 is In ^ "for (std::size_t " ^ I ^ " = " ^ SH ^ "; " ^ I ^ "-- > " ^ SL ^ ";) {",
+  L2 is In ^ "}",
+  std.flatten [[L1], LB, [L2]] Ls.
+
+func block-lines string, list stmt -> list string.
+block-lines In Stmts Lines :- std.map Stmts (stmt-lines In) Ls, std.flatten Ls Lines.
+
+% The functions the body calls, in order of first use: the generated function
+% starts with `using std::f;` for each, so that it instantiates with dual
+% numbers (found by argument-dependent lookup) as well as with double.
+func called-functions list stmt -> list string.
+called-functions Stmts Fs :- std.fold Stmts [] stmt-functions Rev, std.rev Rev Fs.
+
+func stmt-functions stmt, list string -> list string.
+stmt-functions (declare _ _ E) Acc Fs :- !, expr-functions E Acc Fs.
+stmt-functions (allocate _ _) Acc Acc :- !.
+stmt-functions (assign A B) Acc Fs :- !, expr-functions A Acc F1, expr-functions B F1 Fs.
+stmt-functions (increment A B) Acc Fs :- !, expr-functions A Acc F1, expr-functions B F1 Fs.
+stmt-functions (push _ E) Acc Fs :- !, expr-functions E Acc Fs.
+stmt-functions (pop _ E) Acc Fs :- !, expr-functions E Acc Fs.
+stmt-functions (return E) Acc Fs :- !, expr-functions E Acc Fs.
+stmt-functions (branch C T E) Acc Fs :- !,
+  expr-functions C Acc F1, std.fold T F1 stmt-functions F2, std.fold E F2 stmt-functions Fs.
+stmt-functions (loop _ Lo Hi B) Acc Fs :- !,
+  expr-functions Lo Acc F1, expr-functions Hi F1 F2, std.fold B F2 stmt-functions Fs.
+stmt-functions (loop-back _ Lo Hi B) Acc Fs :-
+  expr-functions Lo Acc F1, expr-functions Hi F1 F2, std.fold B F2 stmt-functions Fs.
+
+func expr-functions expr, list string -> list string.
+expr-functions (id _) Acc Acc :- !.
+expr-functions (lit _) Acc Acc :- !.
+expr-functions (at A I) Acc Fs :- !, expr-functions A Acc F1, expr-functions I F1 Fs.
+expr-functions (call F Args) Acc Fs :-
+  std.fold Args Acc expr-functions F1,
+  if (function-name F) (if (std.mem! F1 F) (Fs = F1) (Fs = [F | F1])) (Fs = F1).
+
+func function-name string.
+function-name F :- not (infix-operator F), not (F = "neg").
+
+func function-string cfunction -> string.
+function-string (cfunction Ret Name Args Body) S :-
+  std.string.concat ", " Args SP,
+  called-functions Body Called,
+  std.map Called (f\ l\ l is "    using std::" ^ f ^ ";") Usings,
+  if (Usings = []) (Prologue = []) (std.append Usings [""] Prologue),
+  block-lines "    " Body Lines0,
+  std.append Prologue Lines0 Lines,
+  std.string.concat "\n" Lines SB,
+  if (Lines = []) (Block = "{\n}\n") (Block is "{\n" ^ SB ^ "\n}\n"),
+  S is "template <typename T>\n" ^ Ret ^ " " ^ Name ^ "(" ^ SP ^ ")\n" ^ Block.
+
+func header-string string, list cfunction -> string.
+header-string Source Fs S :-
+  std.map Fs function-string SFs, std.string.concat "\n" SFs SF,
+  S is "// Generated by adjudge from " ^ Source ^ ". Do not edit.\n"
+     ^ "#pragma once\n\n#include <array>\n#include <cmath>\n#include <cstddef>\n#include <vector>\n\n"
+     ^ "namespace adjudge {\n\n" ^ SF ^ "\n} // namespace adjudge\n".
+
+}

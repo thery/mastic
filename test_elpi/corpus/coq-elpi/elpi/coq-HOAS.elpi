@@ -1,0 +1,357 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% coq-HOAS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% This section contains the low level data types linking Coq and elpi.
+% In particular the data type for terms and the evar_map entries (a sequent)
+% and the entry points for tactics
+
+% Entry point for tactics. Eg. "elpi mytactic foo 3 (f x)." becomes
+%   solve <goal> <new goals>
+% Where [str "foo", int 3, trm (app[f,x])] is part of <goal>.
+% The encoding of goals is described below.
+% msolve is for tactics that operate on multiple goals (called via all: ).
+builtin pred solve goal -> list sealed-goal.
+builtin pred msolve list sealed-goal -> list sealed-goal.
+
+% Extra arguments for tactics
+builtin symb tac : ltac1-tactic -> argument.
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Coq's terms
+%
+% Types of term formers
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% -- terms --------------------------------------------------------------------
+data term.
+
+builtin symb sort    : sort -> term. % Prop, Type@{i}
+
+% constants: inductive types, inductive constructors, definitions
+builtin symb global  : gref -> term.
+builtin symb pglobal : gref -> univ-instance -> term.
+
+% binders: to form functions, arities and local definitions
+builtin symb fun     : name -> term -> (term -> term) -> term.         % fun x : t =>
+builtin symb prod    : name -> term -> (term -> term) -> term.         % forall x : t,
+builtin symb let     : name -> term -> term -> (term -> term) -> term. % let x : T := v in
+
+% other term formers: function application, pattern matching and recursion
+builtin symb app     : list term -> term.                   % app [hd|args]
+builtin symb match   : term -> term -> list term -> term.   % match t p [branch])
+builtin symb fix     : name -> int -> term -> (term -> term) -> term. % fix name rno ty bo
+builtin symb mfix    : int -> int -> mfix-block -> term.  % mfix block-idx rno mfix-block
+builtin symb cofix   : name -> term -> (term -> term) -> term.        % cofix name ty bo
+builtin symb mcofix  : int -> mcofix-block -> term.       % mcofix block-idx mcofix-block
+
+builtin symb primitive : primitive-value -> term.
+
+data mfix-block.
+builtin symb mfix-ty : name -> int -> term -> (term -> mfix-block) -> mfix-block. % mfix-ty name rno ty rest
+builtin symb mfix-bo : list term -> mfix-block.
+
+data mcofix-block.
+builtin symb mcofix-ty : name -> term -> (term -> mcofix-block) -> mcofix-block. % mcofix-ty name ty rest
+builtin symb mcofix-bo : list term -> mcofix-block.
+
+% Notes about (match Scrutinee TypingFunction Branches) when
+%   Inductive i A : A -> nat -> Type := K : forall a : A, i A a 0
+% and
+%   Scrutinee be a term of type (i bool true 7)
+%
+% - TypingFunction has a very rigid shape that depends on i. Namely
+%   as many lambdas as indexes plus one lambda for the inductive itself
+%   where the value of the parameters are taken from the type of the scrutinee:
+%     fun `a` (indt "bool") a\
+%      fun `n` (indt "nat) n\
+%       fun `i` (app[indt "i", indt "bool", a n) i\ ..
+%   Such spine of fun cannot be omitted; else elpi cannot read the term back.
+%   See also coq.bind-ind-arity-no-let in coq-lib.elpi, that builds such spine for you,
+%   or the higher level api coq.build-match (same file) that also takes
+%   care of branches.
+% - Branches is a list of terms, the order is the canonical one (the order
+%   of the constructors as they were declared). If the constructor has arguments
+%   (excluding the parameters) then the corresponding term shall be a Coq
+%   function. In this case
+%      fun `x` (indt "bool") x\ ..
+
+% -- helpers ------------------------------------------------------------------
+macro @cast T TY :- (let `cast` TY T x\x).
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Coq's evar_map
+%
+% Context and evar declaration
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% An evar_info (displayed as a Coq goal) is essentially a sequent:
+%
+% x : t
+% y := v : x
+% ----------
+% p x y
+%
+% is coded as an Elpi query
+%
+% pi x1\ decl x1 `x` <t> =>
+%  pi x2\ def x2 `y` x1 <v> =>
+%   declare-evar
+%      [def x2 `y` x1 <v> , decl x1 `x` <t>]
+%      (RawEvar x1 x2) (<p> x1 x2) (Ev x1 x2)
+%
+% where, by default, declare-evar creates a syntactic constraint as
+%
+% {x1 x2} :
+%   decl x1 `x` <t>, def x2 `y` x1 <v> ?-
+%     evar (RawEvar x1 x2) (<p> x1 x2) (Ev x1 x2)  /* suspended on RawEvar, Ev */
+%
+% When the program is over, a remaining syntactic constraint like the one above
+% is read back and transformed into the corresponding evar_info.
+
+builtin func decl term -> name, term. % Var Name Ty
+builtin func def  term -> name, term, term. % Var Name Ty Bo
+builtin func cache term -> term.
+
+builtin func declare-evar list (pred), term, term, term. % Ctx RawEvar Ty Evar
+
+:name "default-declare-evar"
+declare-evar Ctx RawEv Ty Ev :-
+  declare_constraint (declare-evar Ctx RawEv Ty Ev) [RawEv].
+
+% When a goal (evar _ _ _) is turned into a constraint the context is filtered
+% to only contain decl, def, pp.  For now no handling rules for this set of
+% constraints other than one to remove a constraint
+
+builtin func rm-evar term, term.
+rm-evar (uvar as X) (uvar as Y):- !, declare_constraint (rm-evar X Y) [X,Y].
+rm-evar _ _.
+
+constraint declare-evar evar def decl cache rm-evar {
+
+   % Override the actual context
+   rule \ (declare-evar Ctx RawEv Ty Ev) <=> (Ctx =!=> evar RawEv Ty Ev).
+
+   rule \ (rm-evar (uvar X _) (uvar Y _)) (evar (uvar X _) _ (uvar Y _)).
+   rule \ (rm-evar (uvar X _) (uvar Y _)).
+
+}
+
+% The (evar R Ty E) predicate suspends when R and E are flexible,
+% and is solved otherwise.
+% The client may want to provide an alternative implementation of
+% the clause "default-assign-evar", for example to typechecks that the
+% term assigned to E has type Ty, or that the term assigned to R
+% elaborates to a term of type Ty that gets assigned to E.
+% In tactic mode, elpi/coq-elaborator.elpi wires things up that way.
+
+builtin func evar term, term -> term. % Evar Ty RefinedSolution
+evar (uvar as X) T S :- var S _ VL, !,
+  prune T VL, prune X VL, declare_constraint (evar X T S) [X, S].
+
+:name "default-assign-evar"
+evar _ _ _. % volatile, only unresolved evars are considered as evars
+
+% To ease the creation of a context with decl and def
+% Eg.  @pi-decl `x` <t> x1\ @pi-def `y` <t> <v> y\ ...
+macro @pi-decl N T F :- pi x\ decl x N T => F x.
+macro @pi-def N T B F :- pi x\ def x N T B => cache x B_ => F x.
+
+% Converts an arity to a term
+func coq.arity->term arity -> term.
+coq.arity->term (parameter ID _ Ty Rest) (prod Name Ty R) :-
+  coq.id->name ID Name,
+  @pi-decl Name Ty x\ coq.arity->term (Rest x) (R x).
+coq.arity->term (arity A) A.
+
+macro @pi-parameter ID T F :-
+  sigma N\ (coq.id->name ID N, pi x\ decl x N T => F x).
+macro @pi-inductive ID A F :-
+  sigma N\ (coq.id->name ID N, coq.arity->term A T, pi x\ decl x N T => F x).
+
+
+% Sometimes it can be useful to pass to Coq a term with unification variables
+% representing "untyped holes" like an implicit argument _. In particular
+% a unification variable may exit the so called pattern fragment (applied
+% to distinct variables) and hence cannot be reliably mapped to Coq as an evar,
+% but can still be considered as an implicit argument.
+% By loading in the context get-option "HOAS:holes" tt one forces that
+% behavior. Here a convenience macro to be put on the LHS of =>
+macro @holes! :- get-option "HOAS:holes" tt.
+
+% Similarly, some APIs take a term skeleton in input. In that case unification
+% variables are totally disregarded (not even mapped to Coq evars). They are
+% interpreted as the {{ lib:elpi.hole }} constant, which represents an implicit
+% argument. As a consequence these APIs don't modify the input term at all, but
+% rather return a copy. Note that if {{ lib:elpi.hole }} is used directly, then
+% it has to be applied to all variables in scope, since Coq erases variables
+% that are not used. For example using {{ forall x : nat, lib:elpi.hole }} as
+% a term skeleton is equivalent to {{ nat -> lib:elpi.hole }}, while
+% {{ forall x : nat, lib:elpi.hole x lib:elpi.hole more args }} puts x in
+% the scope of the hole (and passes to is more args).
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Coq's goals and tactic invocation
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% A Coq goal is essentially a sequent, like the evar_info above, but since it
+% has to be manipulated as first class Elpi data, it is represented in a slightly
+% different way. For example
+%
+% x : t
+% y := v : x
+% ----------
+% g x y
+%
+% is represented by the following term of type sealed-goal
+%
+%  nabla x1\
+%   nabla x2\
+%    seal
+%      (goal
+%         [def x2 `y` x1 <v> , decl x1 `x` <t>]
+%         (RawEvar x1 x2) (<g> x1 x2) (Evar x1 x2)
+%         (Arguments x1 x2))
+
+data goal.
+data sealed-goal.
+builtin symb nabla : (term -> sealed-goal) -> sealed-goal.
+builtin symb seal  : goal -> sealed-goal.
+
+typeabbrev goal-ctx (list prop).
+builtin symb goal : goal-ctx -> term -> term -> term -> list argument -> goal.
+
+% A sealed-goal closes with nabla the bound names of a
+% 
+%  (goal Ctx RawSolution Ty Solution Arguments)
+%
+% where Ctx is a list of decl or def and Solution is a unification variable
+% to be assigned to a term of type Ty in order to make progress.
+% RawSolution is used as a trigger: when a term is assigned to it, it is
+% elaborated against Ty and the resulting term is assigned to Solution.
+%
+% Arguments contains data attached to the goal, which lives in its context
+% and can be used by tactics to solve the goals.
+
+% A tactic (an elpi predicate which makes progress on a Coq goal) is
+% a predicate of type
+%   sealed-goal -> list sealed-goal -> prop
+% 
+% while the main entry point for a tactic written in Elpi is solve
+% which has type
+%    goal -> list sealed-goal -> prop
+%
+% The utility (coq.ltac.open T G GL) postulates all the variables bounds
+% by nabla and loads the goal context before calling T on the unsealed
+% goal. The invocation of a tactic with arguments
+%   3 x "y" (h x)
+% on the previous goal results in the following Elpi query:
+%
+% (pi x1\ decl x1 `x` <t> =>
+%   pi x2\ def x2 `y` x1 <v> =>
+%    declare-evar
+%       [def x2 `y` x1 <v> , decl x1 `x` <t>]
+%       (RawEvar x1 x2) (<g> x1 x2) (Evar x1 x2)),
+% (coq.ltac.open solve
+%  (nabla x1\ nabla x2\ seal
+%   (goal
+%     [def x2 `y` x1 <v> , decl x1 `x` <t>]
+%     (RawEvar x1 x2) (<g> x1 x2) (Evar x1 x2)
+%     [int 3, str `x`, str`y`, trm (app[const `h`,x1])]))
+%   NewGoals)
+%
+% If the goal sequent contains other evars, then a tactic invocation is
+% an Elpi query made of the conjunction of all the declare-evar queries
+% corresponding to these evars and the query corresponding to the goal
+% sequent. NewGoals can be assigned to a list of goals that should be
+% declared as open. Omitted goals are shelved. If NewGoals is not
+% assigned, then all unresolved evars become new goals, but the order
+% of such goals is not specified.
+
+% The file elpi-ltac.elpi provides a few combinators (other than coq.ltac.open)
+% in the tradition of LCF tacticals. The main difference is that the arguments
+% of custom written tactics must not be passed as predicate arguments but rather
+% put in the goal they receive. Indeed these arguments can contain terms, and
+% their bound variables cannot escape the seal. coq.ltac.set-goal-arguments
+% can be used to put an argument from the current goal context into another
+% goal. The coq.ltac.call utility can call Ltac1 code (written in Coq) and
+% pass arguments via this mechanism.
+
+% Last, since Elpi is already a logic programming language with primitive
+% support for unification variables, most of the work of a tactic can be
+% performed without using tacticals (which work on sealed goals) but rather
+% in the context of the original goal. The last step is typically to call
+% the refine utility with a term synthesized by the tactic or invoke some
+% Ltac1 code on that term (e.g. to call vm_compute, see also the example
+% on the reflexive tactic).
+
+% ----- Multi goals tactics. ----
+% Coq provides goal selectors, such as all:, to pass to a tactic more than one
+% goal. In order to write such a tactic, Coq-Elpi provides another entry point
+% called msolve. To be precise, if there are two goals under focus, say <g1> and
+% <g2>, then all: elpi tac <t> runs the following query
+%
+%   msolve [<g1>,<g2>] NewGoals ;                         % note the disjunction
+%   coq.ltac.all (coq.ltac.open solve) [<g1>,<g2>] NewGoals
+%
+% So, if msolve has no clause, Coq-Elpi will use solve on all the goals
+% independently. If msolve has a clause, then it can manipulate the entire list
+% of sealed goals. Note that the argument <t> is in both <g1> and <g2> but
+% it is interpreted in both contexts independently. If both goals have a proof
+% variable named "x" then passing (@eq_refl _ x) as <t> equips both goals with
+% a (raw) proof that "x = x", no matter what their type is.
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Declarations for Coq's API (environment read/write access, etc).
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+% tt = Yes, ff = No, unspecified = No (unspecified means "_" or a variable).
+typeabbrev opaque?   bool.  macro @opaque! :- tt. macro @transparent! :- ff.
+
+%%%%%%% Attributes to be passed to APIs as in @local! => coq.something %%%%%%%%
+
+macro @keep-alg-univs! :- get-option "coq:keepalgunivs" tt.
+
+macro @primitive! :- get-option "coq:primitive" tt. % primitive records
+macro @reversible! :- get-option "coq:reversible" tt. % coercions
+macro @no-tc! :- get-option "coq:no_tc" tt. % skip typeclass inference 
+
+macro @uinstance! I :- get-option "coq:uinstance" I. % universe instance
+
+% declaration of universe polymorphic constants
+% The first list is the one of the universe variables being bound
+% The first boolean is tt if this list can be extended by Coq (or it has to
+% mention all universes actually used)
+% The second list is the one with the constraints amond where universes
+% The second boolean is tt if this list can be extended by Coq or it has to
+% mention all universe constraints actually required to type check the
+% declaration)
+macro @udecl! Vs LV Cs LC       :- get-option "coq:udecl" (upoly-decl Vs LV Cs LC).
+macro @udecl-cumul! Vs LV Cs LC :- get-option "coq:udecl-cumul" (upoly-decl-cumul Vs LV Cs LC).
+macro @univpoly!       :- @udecl! [] tt [] tt.
+macro @univpoly-cumul! :- @udecl-cumul! [] tt [] tt.
+
+macro @ppwidth! N :- get-option "coq:ppwidth" N. % printing width
+macro @ppall! :- get-option "coq:pp" "all". % printing all
+macro @ppmost! :- get-option "coq:pp" "most". % printing most of contents
+macro @pplevel! N :- get-option "coq:pplevel" N. % printing precedence (for parentheses)
+
+macro @keepunivs! :- get-option "coq:keepunivs" tt. % skeletons elaboration
+macro @dropunivs! :- get-option "coq:keepunivs" ff. % add-indt/add-const
+
+macro @using! S :- get-option "coq:using" S. % like the #[using=S] attribute
+
+macro @inline-at! N :- get-option "coq:inline" (coq.inline.at N). % like Inline(N)
+macro @inline! N :- get-option "coq:inline" coq.inline.default. % like
+
+macro @redflags! F :- get-option "coq:redflags" (F : coq.redflags). % for whd & co
+
+% both arguments are strings eg "8.12.0" "use foo instead"
+macro @deprecated! Since Msg :-
+  get-option "coq:deprecated" (pr Since Msg).
+
+macro @ltacfail! N :- get-option "ltac:fail" N.
+
+% retrocompatibility macro for Coq v8.10
+macro @coercion! :- [coercion reversible].

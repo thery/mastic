@@ -1,0 +1,7 @@
+(executable
+ (name main)
+ (modules main)
+ (libraries elpi_parser elpi_util mastic))
+
+(cram
+ (deps ./main.exe (glob_files cases/*.elpi) (glob_files cases/*.ref)))

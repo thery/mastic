@@ -1,0 +1,33 @@
+pred a.foo4.
+pred a.foo3.
+pred a.foo2.
+pred a.foo1.
+pred a.b.foo2.
+pred a.b.foo1.
+pred a.b.c.foo.
+
+namespace a {
+
+  foo1 :- b.c.foo.
+  foo2 :- b.foo1, b.foo2.
+
+  namespace b {
+
+     foo1 :- c.foo.
+
+    namespace c {
+ 
+       foo.
+   
+    }
+
+     foo2 :- c.foo.
+
+  }
+
+   foo3 :- b.c.foo.
+   foo4 :- b.foo1, b.foo2.
+
+}
+
+ main :- a.foo1, a.foo2, a.foo3, a.foo4.

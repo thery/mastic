@@ -1,0 +1,13 @@
+% q X yields X=ok
+
+pred p -> int.
+pred q -> int.
+pred r -> int, (int -> (pred)).
+symbol g : int -> prop.
+symbol ok, ko : int.
+
+
+q X :- r X (x\ p x).
+r ko (x\ g x).
+r ok (y\ p y).
+main :- q X, X = ok.

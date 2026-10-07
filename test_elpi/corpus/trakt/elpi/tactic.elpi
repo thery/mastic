@@ -1,0 +1,117 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                           %                     Trakt                       %
+%  _______        _    _    %            Copyright (C) 2022 MERCE             %
+% |__   __|      | |  | |   %     (Mitsubishi Electric R&D Centre Europe)     %
+%    | |_ __ __ _| | _| |_  %        Enzo Crance <enzo.crance@inria.fr>       %
+%    | | '__/ _` | |/ / __| %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%    | | | | (_| |   <| |_  % This file is distributed under the terms of the %
+%    |_|_|  \__,_|_|\_\\__| %   GNU Lesser General Public License Version 3   %
+%                           %  (see LICENSE file for the text of the license) %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+pred preprocess-extra
+  i:term, i:goal-ctx, i:option term, i:term, i:type-variance, i:prop, o:term, o:term.
+
+preprocess-extra
+  Term Context ETargetOpt LTarget TVar MustGeneralise Term' TypedFinalProof :- std.do! [
+    % 1. make a full term
+    coq.elaborate-skeleton Term _ Term1 ok,
+
+    % 2. generalise
+    if (MustGeneralise) (
+      generalise-free-variables Term1 ETargetOpt Context Term2 GenProofF
+    ) (
+      Term2 = Term1,
+      GenProofF = (p\ p)
+    ),
+
+    % 3. put all logic in Prop if the target is Prop
+    if (LTarget = {{ Prop }}) (
+      bool-to-prop Term2 TVar Term3 B2PProof,
+      build B2PProof B2PCoqProof,
+      when (debug)
+        (coq.say "bool-to-prop proof" {coq.term->string B2PCoqProof}),
+      if (Term3 = Term2) (
+        B2PProofF = (p\ p)
+      ) (
+        B2PProofF = (p\ app [B2PCoqProof, p])
+      )
+    ) (
+      Term3 = Term2,
+      B2PProofF = (p\ p)
+    ),
+    when (debug)
+      (coq.say "after bool to Prop (raw):" Term3),
+    when (verbose)
+      (coq.say "after bool to Prop:" {coq.term->string Term3}),
+
+    % 4. launch preprocessing
+    preprocess Term3 ETargetOpt LTarget TVar (t\ t) true Term4 Proof,
+
+    when (debug)
+      (coq.say "after preprocess (raw):" Term4),
+
+    % 5. build Coq terms
+    clear-custom-terms Term4 Term',
+    when (verbose)
+      (coq.say "after preprocess:" {coq.term->string Term'}),
+    clear-custom-terms-in-proof Proof Proof',
+    when (debug)
+      (coq.say "preprocess proof (raw):" Proof'),
+    build Proof' CoqProof,
+    when (debug)
+      (coq.say "preprocess proof:" {coq.term->string CoqProof}),
+    if (Term' = Term1) (
+      TypedFinalProof = {{ @id lp:Term1 }}
+    ) (std.do! [
+      clear-custom-terms CoqProof CleanCoqProof,
+      coq.elaborate-skeleton CleanCoqProof _ CleanTypedCoqProof ok,
+      if (TVar = covariant) (
+        FinalProof = fun _ Term' (p\ GenProofF (B2PProofF (app [CleanTypedCoqProof, p])))
+      ) (
+        FinalProof = fun _ Term1 (p\ app [CleanTypedCoqProof, B2PProofF (GenProofF p)])
+      ),
+      coq.elaborate-skeleton FinalProof _ TypedFinalProof ok
+    ])
+  ].
+
+pred nat2int i:term, o:int.
+
+nat2int {{ 0 }} 0.
+nat2int {{ S lp:Nat }} N1 :-
+  nat2int Nat N,
+  N1 is N + 1.
+
+pred format-runtime-relation i:term, o:prop.
+
+format-runtime-relation RRD1 RRC1 :-
+  coq.unify-eq RRD1 {{ pair (pair (pair lp:N lp:R) lp:R') lp:Proof }} ok, !,
+  coq.elaborate-skeleton R T RE ok,
+  coq.elaborate-skeleton R' T' RE' ok,
+  coq.elaborate-skeleton Proof ProofT ProofE ok,
+  nat2int N NArgs,
+  check-relation NArgs RE T RE' T' ProofT true 0 NDrop LSource LTarget infer-target ETargetOpt,
+  zeta-reduce RE REZ,
+  fun-term-head REZ RHead,
+  RRC1 = relation RHead ETargetOpt LSource REZ NArgs RE' LTarget NDrop ProofE.
+
+format-runtime-relation RRD1 RRC1 :-
+  coq.unify-eq RRD1 {{ pair (pair (pair (pair lp:N lp:R) lp:ETarget) lp:R') lp:Proof }} ok,
+  coq.elaborate-skeleton R T RE ok,
+  coq.elaborate-skeleton R' T' RE' ok,
+  coq.elaborate-skeleton Proof ProofT ProofE ok,
+  nat2int N NArgs,
+  check-relation NArgs RE T RE' T' ProofT true 0 NDrop LSource LTarget check-only (some ETarget),
+  zeta-reduce RE REZ,
+  fun-term-head REZ RHead,
+  RRC1 = relation RHead (some ETarget) LSource REZ NArgs RE' LTarget NDrop ProofE.
+
+pred format-runtime-relation-data i:term, o:(list prop).
+
+format-runtime-relation-data RRDS [RRC1|RRC] :-
+  coq.unify-eq RRDS {{ pair lp:RRD lp:RRD1 }} ok,
+  format-runtime-relation RRD1 RRC1, !,
+  format-runtime-relation-data RRD RRC.
+
+format-runtime-relation-data RRD1 [RRC1] :-
+  format-runtime-relation RRD1 RRC1.

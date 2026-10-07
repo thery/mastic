@@ -1,0 +1,58 @@
+% eval-anf.elpi — the evaluator of L1 and of L1ᵃ, the A-normal form.
+%
+% The same rules as the evaluator of L0 (eval.elpi), on the types of L1: a
+% binder binds an atom, opened with the hypothesis `atom-value x V`. It is
+% polymorphic in the index I of L1, since the annotations of L1ᵃ (annotate.elpi)
+% do not change what a program computes: the same evaluator runs L1 and L1ᵃ. It
+% is polymorphic in the domain of numbers too, and shares the operations of the
+% evaluator of L0, so that normalize (L0 to L1) and annotate (L1 to L1ᵃ) are
+% checked by evaluating their input and their output.
+
+shorten adjudge.{ dom-lit, eval-op1, eval-op2, replace-nth }.
+
+namespace adjudge {
+
+func atom-value atom -> val N.             % the value of a bound atom, set when its binder is opened
+
+func aeval-function domain N, afunction I, list (val N) -> val N.
+aeval-function D (a-function _ Def) Args V :- aeval-definition D Def Args V.
+
+func aeval-definition domain N, adefinition I, list (val N) -> val N.
+aeval-definition D (a-arg _ _ _ F) [A | As] V :- !, pi x\ atom-value x A =!=> aeval-definition D (F x) As V.
+aeval-definition D (a-body _ B) [] V :- aeval D B V.
+
+func aeval-atom domain N, atom -> val N.
+aeval-atom D (a-num S) (v-real X) :- !, dom-lit D S X.
+aeval-atom _ (a-nat K) (v-int K) :- !.
+aeval-atom _ X V :- atom-value X V.
+
+% A body: its lets in order, then its tail atom.
+func aeval domain N, anf I -> val N.
+aeval D (a-let _ E B) V :- !, aeval-value D E VE, pi x\ atom-value x VE =!=> aeval D (B x) V.
+aeval D (a-ret X) V :- aeval-atom D X V.
+
+func aeval-value domain N, value I -> val N.
+aeval-value D (a-op1 F A) V :- !, aeval-atom D A VA, eval-op1 D F VA V.
+aeval-value D (a-op2 F A B) V :- !, aeval-atom D A VA, aeval-atom D B VB, eval-op2 D F VA VB V.
+aeval-value D (a-get A I) (v-real X) :- !, aeval-atom D A (v-array L), aeval-atom D I (v-int K), std.nth K L X.
+aeval-value D (a-set A I E) (v-array L1) :- !,
+  aeval-atom D A (v-array L), aeval-atom D I (v-int K), aeval-atom D E (v-real X), replace-nth K X L L1.
+aeval-value D (a-ite C T E) V :- !, aeval-atom D C (v-bool B), if (B = tt) (aeval D T V) (aeval D E V).
+aeval-value D (a-map Lo Hi B) (v-array L) :- !,
+  aeval-atom D Lo (v-int I), aeval-atom D Hi (v-int J), aeval-map D I J B L.
+aeval-value D (a-fold _ Lo Hi Init B) V :-
+  aeval-atom D Lo (v-int I), aeval-atom D Hi (v-int J), aeval-atom D Init S, aeval-fold D I J B S V.
+
+func aeval-map domain N, int, int, (atom -> anf I) -> list N.
+aeval-map _ I J _ [] :- I >= J, !.
+aeval-map D I J B [X | Xs] :-
+  (pi i\ atom-value i (v-int I) =!=> aeval D (B i) (v-real X)),
+  I1 is I + 1, aeval-map D I1 J B Xs.
+
+func aeval-fold domain N, int, int, (atom -> atom -> anf I), val N -> val N.
+aeval-fold _ I J _ S S :- I >= J, !.
+aeval-fold D I J B S V :-
+  (pi i\ pi s\ [atom-value i (v-int I), atom-value s S] =!=> aeval D (B i s) S1),
+  I1 is I + 1, aeval-fold D I1 J B S1 V.
+
+}

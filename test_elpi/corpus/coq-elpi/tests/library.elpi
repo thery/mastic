@@ -1,0 +1,7 @@
+namespace coq {
+	data tm A.
+}
+namespace cpp {
+	typeabbrev bs (coq.tm int).
+}
+p.

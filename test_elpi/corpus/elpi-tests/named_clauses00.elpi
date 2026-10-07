@@ -1,0 +1,9 @@
+pred c1.
+
+:name "name1"
+c1.
+
+:name "name1"
+c1.
+
+main.

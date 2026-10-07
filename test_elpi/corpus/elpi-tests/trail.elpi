@@ -1,0 +1,20 @@
+% Query: p X Z.
+% Expected outcome: X=ok, Z=ok.
+
+data tm.
+symb a, b : tm.
+
+pred p -> diagnostic, diagnostic.
+p X Z :- foo Y X, r Y Z.
+
+pred foo -> tm, diagnostic.
+foo Y X :- A = ok, q Y, X = A.
+
+pred q -> tm.
+q a.
+q b.
+
+pred r -> tm, diagnostic.
+r b ok.
+
+main :- p X Z, X = ok, Z = ok.

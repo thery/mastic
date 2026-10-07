@@ -1,0 +1,179 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                            %                     Trocq                      %
+%  _______                   %        Copyright (C) 2023 Inria & MERCE        %
+% |__   __|                  %     (Mitsubishi Electric R&D Centre Europe)    %
+%    | |_ __ ___   ___ __ _  %        Cyril Cohen <cyril.cohen@inria.fr>      %
+%    | | '__/ _ \ / __/ _` | %        Enzo Crance <enzo.crance@inria.fr>      %
+%    | | | | (_) | (_| (_| | %    Assia Mahboubi <assia.mahboubi@inria.fr>    %
+%    |_|_|  \___/ \___\__, | %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                        | | %   This file is distributed under the terms of  %
+%                        |_| %   GNU Lesser General Public License Version 3  %
+%                            % (see LICENSE file for the text of the license) %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% -----------------------------------------------------------------------------
+% Annotated terms
+% -----------------------------------------------------------------------------
+
+accumulate "Trocq.Elpi/class".
+accumulate "Trocq.Elpi/util".
+
+kind aterm type.
+type asort    sort -> param-class -> aterm.
+type aglobal  gref -> aterm.
+type apglobal gref -> univ-instance -> aterm.
+type afun     name -> aterm -> (aterm -> aterm) -> aterm.     % fun x : t =>
+type aprod    name -> aterm -> (aterm -> aterm) -> aterm.         % forall x : t,
+type alet     name -> aterm -> aterm -> (aterm -> aterm) -> aterm. % let x : T := v in
+type aapp     list aterm -> aterm.                              % app [hd|args]
+type amatch   aterm -> aterm -> list aterm -> aterm.              % match t p [branch])
+type afix     name -> int -> aterm -> (term -> aterm) -> aterm.  % fix name rno ty bo
+type aprimitive primitive-value -> aterm.
+
+% Forgets the term annotations of a term
+func aterm->term aterm -> term.
+aterm->term (asort Sort _) (sort Sort) :- !.
+aterm->term (aglobal GRef) (global GRef) :- !.
+aterm->term (apglobal GRef Universe) (pglobal GRef Universe) :- !.
+aterm->term (afun N AT AF) (fun N T F) :-
+  aterm->term AT T,
+  pi ay\ pi y \ aterm->term ay y => aterm->term (AF ay) (F y), !.
+aterm->term (aprod N AT AF) (prod N T F) :- !,
+  aterm->term AT T,
+  pi ay\ pi y \ aterm->term ay y => aterm->term (AF ay) (F y), !.
+aterm->term (aapp AL) (app L) :-
+  std.map AL aterm->term L, !.
+aterm->term (uvar as AT) T :- !,
+  declare_constraint (aterm->term AT T) [AT].
+%TODO implement the other constructors
+
+% Adds fresh annotation variable on every sort inside a term
+func term->aterm term -> aterm.
+term->aterm (sort S) (asort S Alpha_) :- !.
+term->aterm (global GRef) (aglobal GRef) :- !.
+term->aterm (pglobal GRef U) (apglobal GRef U) :- !.
+term->aterm (fun Name T F) (afun Name AT AF) :- !,
+  term->aterm T AT,
+  pi y\ pi ay\ term->aterm y ay => term->aterm (F y) (AF ay).
+term->aterm (prod Name T F) (aprod Name AT AF) :- !,
+  term->aterm T AT,
+  pi y\ pi ay\ term->aterm y ay => term->aterm (F y) (AF ay).
+term->aterm (app L) (aapp AL) :- !,
+  std.map L term->aterm AL.
+%TODO implement the other constructors
+
+namespace aterm.util {
+  % Forgets the term annotations of a function aterm -> aterm
+  func atermfun->termfun (aterm -> aterm) -> (term -> term).
+  atermfun->termfun AF F :- !, 
+    pi ax x\ aterm->term ax x => aterm->term (AF ax) (F x).
+
+  % {mk-app F Args} outputs a term corresponding to (aapp [F | Args])
+  % With some β-reductions
+  func mk-app aterm, list aterm -> aterm.
+  mk-app T [] T :- !.
+  mk-app (afun _ _ F) [X|XS] T :- !, mk-app (F X) XS T.
+  mk-app (alet _ _ X F) XS T :- !, mk-app (F X) XS T.
+  mk-app (aapp L) XS (aapp L') :- !, std.append L XS L'.
+  mk-app T XS (aapp [T|XS]) :- !.
+
+  % classes returns a list of all non-output param classes of an aterm and the _potential_ output param class
+  % all-classes returns a list of all param-classes in an aterm (potential output included)
+  func classes aterm -> list param-class, option param-class.
+  func all-classes aterm -> list param-class.
+
+  all-classes T Cz :-
+    classes T Cs OC,
+    if (OC = some C) (Cz = C :: Cs) (Cz = Cs).
+
+  classes (uvar as X) L O :- !, declare_constraint (classes X L O) [X].
+  classes (asort _ C) [] (some C) :- !.
+  classes (aprod _ T F) Cs Out :- !,
+    pi x\ (
+      all-classes T LT,
+      classes (F x) LF Out,
+      std.append LT LF Cs
+    ).
+  classes (afun _ T F) Cs none :- !,
+    pi x\ std.append {all-classes T} {all-classes (F x)} Cs.
+  classes (aapp [F|Xs]) Cs Out :- !,
+    std.flatten {std.map Xs all-classes} XCs,
+    classes F FCs Out,
+    std.append FCs XCs Cs.
+  % The other cases are aglobal, apglobal, and (name X), which all leads to [],none
+  classes _ [] none :- !.
+
+  % Returns n,b where n is the number of input classes that T can hold, and
+  % b is wether T has an output class
+  func shape term -> int, bool.
+  func shape.all term -> int.
+  shape (sort _) 0 tt :- !.
+  shape (prod _ T F) N B :- !,
+    pi x\ (
+      shape T TN TB,
+      shape (F x) FN B,
+      N is TN + FN + {util.bool->int TB}
+    ).
+  shape (fun _ T F) N ff :- !,
+    pi x\ (
+      shape T TN TB,
+      shape (F x) FN FB,
+      N is TN + FN + {util.bool->int TB} + {util.bool->int FB}
+    ).
+  shape (app [F|Xs]) N B :- !,
+    std.fold Xs 0 (x\ n\ out\ sigma XN XB XBi\
+      shape x XN XB,
+      util.bool->int XB XBi,
+      out is n + XN + XBi
+    ) XsN,
+    shape F FN B,
+    N is FN + XsN.
+  % The other cases are aglobal, apglobal, and (name X), which all leads to [],none
+  shape _ 0 ff :- !.
+  shape.all T N :- !, shape T NT B, N is NT + {util.bool->int B}.
+
+  func mk-aterm term, list param-class, option param-class -> aterm.
+  func mk-aterm.all term, list param-class -> aterm.
+  mk-aterm.all T Cs AT :-
+    shape T N B,
+    if (B == tt) (
+      mk-aterm T {std.drop-last 1 Cs} (some {std.last Cs}) AT
+    ) (
+      mk-aterm T Cs none AT
+    ).
+  mk-aterm (sort S) [] (some C) (asort S C) :- !.
+  mk-aterm (prod N T F) Cs Out (aprod N AT AF) :- !,
+    pi x ax\ term->aterm x ax => (
+      shape.all T TN,
+      le_ TN {std.length Cs},
+      std.split-at TN Cs CsT CsF,
+      mk-aterm.all T CsT AT,
+      mk-aterm (F x) CsF Out (AF ax)
+    ).
+  mk-aterm (fun N T F) Cs Out (afun N AT AF) :- !,
+    pi x ax\ term->aterm x ax => (
+      shape.all T TN,
+      le_ TN {std.length Cs},
+      std.split-at TN Cs CsT CsF,
+      mk-aterm.all T CsT AT,
+      mk-aterm.all (F x) CsF (AF ax)
+    ).
+  mk-aterm (app [F|Xs]) Cs Out (aapp [AF|AXs]) :- !,
+    shape.all F FN,
+    le_ FN {std.length Cs},
+    std.split-at FN Cs CsF CsXs,
+    mk-aterm F CsF Out AF,
+    std.fold-map Xs CsXs (x\ csxs\ ax\ csxs'\ sigma XN CSX CSXSL'\
+      shape.all x XN,
+      std.length csxs CSXSL',
+      le_ XN CSXSL',
+      std.split-at XN csxs CSX csxs',
+      mk-aterm.all x CSX ax
+    ) AXs [].
+  mk-aterm (global G) _ _ (aglobal G) :- !.
+  mk-aterm (pglobal G U) _ _ (apglobal G U) :- !.
+  mk-aterm T _ _ AT :- name T, !, term->aterm T AT.
+}
+
+func aterm.util.global i:aterm o:gref.
+aterm.util.global (aglobal G) G :- !.
+aterm.util.global (apglobal G _) G :- !.

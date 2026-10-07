@@ -1,0 +1,7 @@
+data dl A.
+typeabbrev (dl A) (dl A).
+
+pred p dl (dl A).
+
+main.
+

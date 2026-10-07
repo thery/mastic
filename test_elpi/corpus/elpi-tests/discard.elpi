@@ -1,0 +1,9 @@
+symb foo int.
+symb bar int.
+main :-
+  foo = _,
+  _ = 4,
+  _ = "",
+  _ = _,
+  _Foo = bar,
+  pi x \ _Foo = x.

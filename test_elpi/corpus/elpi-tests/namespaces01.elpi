@@ -1,0 +1,12 @@
+pred toto int.
+toto 1.
+
+% We test toto is not put inside the namespace
+namespace foo {
+  pred bar any.
+  bar X :- toto 2 => baz X.
+  pred baz any.
+  baz X :- toto X.
+}
+main :- foo.bar 2, foo.baz 1.
+

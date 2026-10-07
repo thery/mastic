@@ -1,0 +1,148 @@
+% simplify.elpi — L2′: simplifications of the derivative IR, from L2 to L2.
+%
+% Differentiation stays naive, one rule per construct, and this pass cleans up
+% what the rules produce when put together:
+%   - algebra on literals: x * 1, x * 0, x + 0, x^1, x^0, -(-x);
+%   - an accumulation that starts at zero: `T x_bar = 0; ...; x_bar += e;`, when
+%     the increment is the first statement to mention x_bar, becomes
+%     `... T x_bar = e;`, a constant when nothing writes x_bar afterwards;
+%   - accumulating zero, and a zero accumulator nothing mentions, are removed;
+%   - a constant whose value is a literal is replaced by the literal;
+%   - a constant nothing mentions afterwards is removed: expressions have no
+%     side effects, and the block is simplified from its end, so a chain of
+%     dead constants goes at once.
+% Multiplying by the literal 0 gives 0, even when the other factor is not
+% finite: the usual convention of differentiation, where a zero partial
+% derivative means no dependence.
+
+namespace adjudge {
+
+func simplify dfunction -> dfunction.
+simplify (dfunction N S) (dfunction N S1) :- simplify-scoped S S1.
+
+func simplify-scoped scoped dbody -> scoped dbody.
+simplify-scoped (named N F) (named N G) :- !, pi v\ simplify-scoped (F v) (G v).
+simplify-scoped (fresh P F) (fresh P G) :- !, pi v\ simplify-scoped (F v) (G v).
+simplify-scoped (done (dbody R Ps Ss)) (done (dbody R Ps Ss1)) :- simplify-stmts Ss Ss1.
+
+% Expressions, bottom-up.
+func simplify-expr dexpr -> dexpr.
+simplify-expr (d-op1 F A) E :- !, simplify-expr A A1, simplify-op1 F A1 E.
+simplify-expr (d-op2 F A B) E :- !, simplify-expr A A1, simplify-expr B B1, simplify-op2 F A1 B1 E.
+simplify-expr (d-at A I) (d-at A1 I1) :- !, simplify-expr A A1, simplify-expr I I1.
+simplify-expr E E.
+
+func simplify-op1 unary, dexpr -> dexpr.
+simplify-op1 (pow 1) A A :- !.
+simplify-op1 (pow 0) _ (d-real "1") :- !.
+simplify-op1 neg (d-op1 neg A) A :- !.
+simplify-op1 F A (d-op1 F A).
+
+func simplify-op2 binary, dexpr, dexpr -> dexpr.
+simplify-op2 mul (d-real "0") _ (d-real "0") :- !.
+simplify-op2 mul _ (d-real "0") (d-real "0") :- !.
+simplify-op2 mul (d-real "1") B B :- !.
+simplify-op2 mul A (d-real "1") A :- !.
+simplify-op2 mul (d-real "-1") B (d-op1 neg B) :- !.
+simplify-op2 mul A (d-real "-1") (d-op1 neg A) :- !.
+simplify-op2 add (d-real "0") B B :- !.
+simplify-op2 add A (d-real "0") A :- !.
+simplify-op2 sub A (d-real "0") A :- !.
+simplify-op2 F A B (d-op2 F A B).
+
+% Statements: the expressions and the nested blocks first, then the block.
+func simplify-stmts list dstmt -> list dstmt.
+simplify-stmts Ss R :- std.map Ss simplify-stmt Ss1, fuse Ss1 R.
+
+func simplify-stmt dstmt -> dstmt.
+simplify-stmt (d-define S V E) (d-define S V E1) :- !, simplify-expr E E1.
+simplify-stmt (d-assign A B) (d-assign A1 B1) :- !, simplify-expr A A1, simplify-expr B B1.
+simplify-stmt (d-increment A B) (d-increment A1 B1) :- !, simplify-expr A A1, simplify-expr B B1.
+simplify-stmt (d-branch C T E) (d-branch C1 T1 E1) :- !, simplify-expr C C1, simplify-stmts T T1, simplify-stmts E E1.
+simplify-stmt (d-for I Lo Hi B) (d-for I Lo1 Hi1 B1) :- !, simplify-expr Lo Lo1, simplify-expr Hi Hi1, simplify-stmts B B1.
+simplify-stmt (d-for-back I Lo Hi B) (d-for-back I Lo1 Hi1 B1) :- !, simplify-expr Lo Lo1, simplify-expr Hi Hi1, simplify-stmts B B1.
+simplify-stmt (d-push T E) (d-push T E1) :- !, simplify-expr E E1.
+simplify-stmt (d-pop T E) (d-pop T E1) :- !, simplify-expr E E1.
+simplify-stmt (d-return E) (d-return E1) :- !, simplify-expr E E1.
+simplify-stmt S S.
+
+% fuse Ss R: the accumulations of the block Ss that start at zero, fused.
+func fuse list dstmt -> list dstmt.
+fuse [] [] :- !.
+fuse [d-increment _ (d-real "0") | Ss] R :- !, fuse Ss R.
+fuse [d-define d-mutable V (d-real "0") | Ss] R :-
+  first-mention V Ss Before M After, M = d-increment (d-var V) E, not (mentions-expr V E), !,
+  if (std.exists! After (writes V)) (S = d-mutable) (S = d-constant real),
+  std.append Before [d-define S V E | After] Ss1,
+  fuse Ss1 R.
+fuse [d-define d-mutable V (d-real "0") | Ss] R :- not (std.exists! Ss (mentions V)), !, fuse Ss R.
+fuse [d-define (d-constant _) V (d-real L) | Ss] R :- !,
+  std.map Ss (replace-stmt V (d-real L)) Ss1,
+  simplify-stmts Ss1 R.
+fuse [d-define (d-constant T) V E | Ss] R :- !,
+  fuse Ss R1,
+  if (std.exists! R1 (mentions V)) (R = [d-define (d-constant T) V E | R1]) (R = R1).
+fuse [S | Ss] [S | R] :- fuse Ss R.
+
+% replace-stmt V L S S1: S1 is S with the variable V replaced by the literal L.
+func replace-stmt dvar, dexpr, dstmt -> dstmt.
+replace-stmt V L (d-define S X E) (d-define S X E1) :- !, replace-expr V L E E1.
+replace-stmt V L (d-assign A B) (d-assign A1 B1) :- !, replace-expr V L A A1, replace-expr V L B B1.
+replace-stmt V L (d-increment A B) (d-increment A1 B1) :- !, replace-expr V L A A1, replace-expr V L B B1.
+replace-stmt V L (d-branch C T E) (d-branch C1 T1 E1) :- !,
+  replace-expr V L C C1, std.map T (replace-stmt V L) T1, std.map E (replace-stmt V L) E1.
+replace-stmt V L (d-for I Lo Hi B) (d-for I Lo1 Hi1 B1) :- !,
+  replace-expr V L Lo Lo1, replace-expr V L Hi Hi1, std.map B (replace-stmt V L) B1.
+replace-stmt V L (d-for-back I Lo Hi B) (d-for-back I Lo1 Hi1 B1) :- !,
+  replace-expr V L Lo Lo1, replace-expr V L Hi Hi1, std.map B (replace-stmt V L) B1.
+replace-stmt V L (d-push T E) (d-push T E1) :- !, replace-expr V L E E1.
+replace-stmt V L (d-pop T E) (d-pop T E1) :- !, replace-expr V L E E1.
+replace-stmt V L (d-return E) (d-return E1) :- !, replace-expr V L E E1.
+replace-stmt _ _ S S.
+
+func replace-expr dvar, dexpr, dexpr -> dexpr.
+replace-expr V L (d-var X) L :- X = V, !.
+replace-expr V L (d-at A I) (d-at A1 I1) :- !, replace-expr V L A A1, replace-expr V L I I1.
+replace-expr V L (d-op1 F A) (d-op1 F A1) :- !, replace-expr V L A A1.
+replace-expr V L (d-op2 F A B) (d-op2 F A1 B1) :- !, replace-expr V L A A1, replace-expr V L B B1.
+replace-expr _ _ E E.
+
+% first-mention V Ss Before S After: S is the first statement of Ss that mentions V.
+func first-mention dvar, list dstmt -> list dstmt, dstmt, list dstmt.
+first-mention V [S | Ss] [] S Ss :- mentions V S, !.
+first-mention V [S | Ss] [S | Before] M After :- first-mention V Ss Before M After.
+
+% mentions V S: the statement S, or a block nested in it, reads or writes V.
+func mentions dvar, dstmt.
+mentions V (d-define _ X E) :- !, (X = V ; mentions-expr V E), !.
+mentions V (d-real-var X) :- !, X = V.
+mentions V (d-tape X) :- !, X = V.
+mentions V (d-assign A B) :- !, std.exists! [A, B] (mentions-expr V).
+mentions V (d-increment A B) :- !, std.exists! [A, B] (mentions-expr V).
+mentions V (d-branch C T E) :- !, (mentions-expr V C ; std.exists! T (mentions V) ; std.exists! E (mentions V)), !.
+mentions V (d-for I Lo Hi B) :- !, (I = V ; std.exists! [Lo, Hi] (mentions-expr V) ; std.exists! B (mentions V)), !.
+mentions V (d-for-back I Lo Hi B) :- !, (I = V ; std.exists! [Lo, Hi] (mentions-expr V) ; std.exists! B (mentions V)), !.
+mentions V (d-push T E) :- !, (T = V ; mentions-expr V E), !.
+mentions V (d-pop T E) :- !, (T = V ; mentions-expr V E), !.
+mentions V (d-return E) :- mentions-expr V E.
+
+func mentions-expr dvar, dexpr.
+mentions-expr V (d-var X) :- !, X = V.
+mentions-expr V (d-at A I) :- !, std.exists! [A, I] (mentions-expr V).
+mentions-expr V (d-op1 _ A) :- !, mentions-expr V A.
+mentions-expr V (d-op2 _ A B) :- std.exists! [A, B] (mentions-expr V).
+
+% writes V S: the statement S, or a block nested in it, assigns or accumulates into V.
+func writes dvar, dstmt.
+writes V (d-assign A _) :- target V A, !.
+writes V (d-increment A _) :- target V A, !.
+writes V (d-pop _ A) :- target V A, !.
+writes V (d-branch _ T E) :- (std.exists! T (writes V) ; std.exists! E (writes V)), !.
+writes V (d-for _ _ _ B) :- std.exists! B (writes V), !.
+writes V (d-for-back _ _ _ B) :- std.exists! B (writes V).
+
+func target dvar, dexpr.
+target V (d-var X) :- !, X = V.
+target V (d-at A _) :- target V A.
+
+}

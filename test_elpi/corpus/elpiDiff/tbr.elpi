@@ -1,0 +1,87 @@
+% tbr.elpi — to-be-recorded: what the adjoint code needs, computed bottom-up.
+%
+% `needs M T U L` returns two sets of atoms for a body T transposed in sweep M:
+%   U, the atoms the value of T depends on through positions that carry a
+%      derivative (the backward half of activity analysis: useful);
+%   L, the atoms the adjoint code of T references by value: read by a partial
+%      derivative, an index, a condition or a loop bound, or needed to compute a
+%      value that is.
+% A binder is active when varied and useful; its value is computed by the
+% forward sweep when it is in L, and, in the forward sweep, when a fold in it
+% records. In A-normal form this is one structural pass: a partial derivative
+% is an expression over atoms, so what it reads is syntactic. Two decisions follow:
+%   - a sweep computes a let, or replays it inside a reverse loop, only when
+%     its binder is needed;
+%   - a fold records its state before each overwrite only when the reverse
+%     loop reads it (state-live).
+
+shorten adjudge.{ varied, varied-value, let-binder, fold-binders, comparison, partial1, partial2, atoms-of-atom, atoms-of-atoms, atoms-of-value, atoms-of-anf, atoms-of-pexpr, atom-member, atom-remove, atom-union }.
+
+namespace adjudge {
+
+kind sweep type.
+type forward sweep.                % the forward sweep of the adjoint: computes and records
+type replay  sweep.                % a recomputation inside a reverse loop or branch: records nothing
+
+func needs sweep, anf bare -> list atom, list atom.
+func value-needs value bare -> list atom, list atom.
+func state-live atom, (atom -> atom -> anf bare).
+func records value bare.
+func records-in anf bare.
+func read-by atom, pexpr -> list atom.
+
+needs M (a-let _ E B) U L :- !,
+  if (varied-value E) (V = tt) (V = ff),
+  let-binder E (x\ needs M (B x) (UB x) (LB x),
+                  if (atom-member x (UB x)) (Useful = tt) (Useful = ff),
+                  if (atom-member x (LB x)) (Needed = tt) (Needed = ff),
+                  atom-remove x (UB x) U0, atom-remove x (LB x) L0),
+  if (V = tt, Useful = tt) (value-needs E ReadsE FlowsE) (ReadsE = [], FlowsE = []),
+  if (Needed = tt ; M = forward, records E) (atoms-of-value E AtomsE) (AtomsE = []),
+  atom-union U0 FlowsE U,
+  atom-union L0 ReadsE L1, atom-union L1 AtomsE L.
+% computes-value: the adjoint also computes the value of the function, so its
+% forward sweep reads the result (mode adjoint-value). Set by annotate.
+func computes-value.
+
+needs forward (a-ret X) U U :- computes-value, !, atoms-of-atom X U.
+needs _ (a-ret X) U [] :- atoms-of-atom X U.      % the tail: the result is this atom; its reverse only touches its bar
+
+% value-needs E R F: for an active value E, R the atoms its reverse reads, F the
+% atoms its value depends on. Loop bodies and branches are always replayed.
+value-needs (a-op1 F A) R Fl :- !, partial1 F A P, read-by A P R, atoms-of-atom A Fl.
+value-needs (a-op2 F _ _) [] [] :- comparison F, !.
+value-needs (a-op2 F A B) R Fl :- !,
+  partial2 F A B PA PB, read-by A PA RA, read-by B PB RB, atom-union RA RB R,
+  atoms-of-atoms [A, B] Fl.
+value-needs (a-get A I) R Fl :- !, atoms-of-atom I R, atoms-of-atom A Fl.
+value-needs (a-set A I V) R Fl :- !, atoms-of-atom I R, atoms-of-atoms [A, V] Fl.
+value-needs (a-ite C T E) R Fl :- !,
+  needs replay T UT LT, needs replay E UE LE,
+  atoms-of-atom C RC, atom-union RC LT R1, atom-union R1 LE R,
+  atom-union UT UE Fl.
+value-needs (a-map Lo Hi B) R Fl :- !,
+  (pi i\ needs replay (B i) (U i) (L i), atom-remove i (U i) Fl, atom-remove i (L i) L0),
+  atoms-of-atoms [Lo, Hi] RB, atom-union RB L0 R.
+value-needs (a-fold _ Lo Hi Init B) R Fl :-
+  fold-binders Init B (i\ s\ needs replay (B i s) (U i s) (L i s),
+                          atom-remove i (U i s) (U1 s), atom-remove s (U1 s) U0,
+                          atom-remove i (L i s) (L1 s), atom-remove s (L1 s) L0),
+  atoms-of-atoms [Lo, Hi] RB, atom-union RB L0 R,
+  atoms-of-atom Init FI, atom-union FI U0 Fl.
+
+% read-by A P R: R, the atoms the partial derivative P reads, when the operand A is varied.
+read-by A P R :- varied A, !, atoms-of-pexpr P R.
+read-by _ _ [].
+
+% The state of a fold is recorded before each overwrite iff the reverse loop reads it.
+state-live Init B :- fold-binders Init B (i\ s\ needs replay (B i s) _ (L i s), atom-member s (L i s)).
+
+% The forward sweep must run a let when a fold in it records something.
+records (a-fold _ _ _ I B) :- state-live I B, !.
+records (a-fold _ _ _ I B) :- !, fold-binders I B (i\ s\ records-in (B i s)).
+
+records-in (a-let _ E _) :- records E, !.
+records-in (a-let _ E B) :- let-binder E (y\ records-in (B y)).
+
+}

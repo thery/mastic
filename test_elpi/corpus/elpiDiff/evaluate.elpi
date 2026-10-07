@@ -1,0 +1,229 @@
+% evaluate.elpi — running the functions of a case with the evaluators.
+%
+% Not accumulated by adjudge.elpi: the evaluators use float functions of Elpi
+% newer than its release 3.7.1 (fexp, pow, string_to_real), and the tool itself
+% must keep working without them. A case is evaluated through a file that
+% accumulates this one and the case:
+%   accumulate evaluate.  accumulate primal.
+% then
+%   elpi -I <elpiDiff> -I <case> that-file.elpi -exec run -- <function> <argument>..
+% An argument is a real literal (0.7), an integer (3), or, for an array of N
+% reals, N real literals in a row.
+
+accumulate adjudge.
+accumulate numbers.
+accumulate eval.
+accumulate eval-anf.
+accumulate exec.
+
+shorten adjudge.{ floats, duals, eval-function, read-arguments, val-string, signature-string, ty-string,
+                  split-at, definition-decls, seed, dual-strings,
+                  l2-program, l2-param-strings, l2-read-arguments, read-argument, exec-dfunction,
+                  check, mode-value, annotate, differentiate, simplify, dname, var-name,
+                  aeval-function, normalize, expressible }.
+
+% run [Name | Args]: prints the value of the function Name of the case on Args.
+func run list string.
+run [Name | Args] :- !,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal (function Name D) | _])
+     (floats Dom, read-arguments D Args Vs, eval-function Dom (function Name D) Vs V,
+      val-string V S, print S)
+     (M is "no function `" ^ Name ^ "` in the case", std.fatal-error M).
+run _ :- std.fatal-error "usage: elpi -I <elpiDiff> -I <case> <file accumulating evaluate and the case> -exec run -- <function> <argument>..".
+
+% tangent [Name | Args ++ ["/" | Dots]]: prints the value of the function Name
+% on Args, then its tangent along Dots, computed by the same evaluator in the
+% domain of dual numbers over floats. Dots holds one real per real of the
+% arguments that are not passive, in order; a passive real has a zero tangent.
+func tangent list string.
+tangent [Name | Rest] :- !,
+  split-at "/" Rest Args Dots,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal (function Name D) | _])
+     (floats F, duals F Dom, read-arguments D Args Vs, definition-decls D Decls, seed Decls Vs Dots Ws,
+      eval-function Dom (function Name D) Ws V, dual-strings V SV SD, print SV, print SD)
+     (M is "no function `" ^ Name ^ "` in the case", std.fatal-error M).
+tangent _ :- std.fatal-error "usage: ... -exec tangent -- <function> <argument>.. / <tangent>..".
+
+% l1-run [Stage, Name | Args]: prints the value of the function Name on Args,
+% computed by the evaluator of L1 on its A-normal form (Stage = anf) or on its
+% annotated form (Stage = annotated), both in the domain of floats. With run,
+% this checks the passes normalize and annotate.
+func l1-run list string.
+l1-run [Stage, Name | Args] :- !,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal (function Name D) | _]) true (std.fatal-error "no such function"),
+  if (expressible (function Name D)) true (std.fatal-error "the function has no A-normal form"),
+  normalize (function Name D) A, floats Dom, read-arguments D Args Vs,
+  if (Stage = "anf") (aeval-function Dom A Vs V)
+  (if (Stage = "annotated") (annotate ff A A1, aeval-function Dom A1 Vs V)
+     (std.fatal-error "the stage is anf or annotated")),
+  val-string V S, print S.
+l1-run _ :- std.fatal-error "usage: ... -exec l1-run -- anf|annotated <function> <argument>..".
+
+% passes [Name | Args]: evaluates the function Name on Args in L0, in L1 and in
+% L1ᵃ, over floats, and checks that the three values are the same floats: that
+% normalize and annotate preserve the semantics, exactly. Prints "same" or the
+% values.
+func passes list string.
+passes [Name | Args] :- !,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal (function Name D) | _]) true (std.fatal-error "no such function"),
+  floats Dom, read-arguments D Args Vs,
+  eval-function Dom (function Name D) Vs V0,
+  normalize (function Name D) A, aeval-function Dom A Vs V1,
+  annotate ff A A1, aeval-function Dom A1 Vs V2,
+  if (V0 = V1, V1 = V2) (print "same")
+     (val-string V0 S0, val-string V1 S1, val-string V2 S2, print "L0" S0 "L1" S1 "L1a" S2).
+passes _ :- std.fatal-error "usage: ... -exec passes -- <function> <argument>..".
+
+% l2-same [Mode, Name | Args]: executes the L2 program of Name in Mode before
+% and after simplification, on the same arguments, and checks that they leave
+% the same floats: that simplify preserves the semantics exactly (on finite
+% numbers: it rewrites x * 0 to 0). Prints "same" or both results.
+func l2-same list string.
+l2-same [Mode, Name | Args] :- !,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal F | _]) true (std.fatal-error "no such function"),
+  l2-program Mode "derivative" F (dfunction N P), l2-program Mode "simplified" F (dfunction N1 P1),
+  floats Dom, l2-read-arguments P Args Vs,
+  exec-dfunction Dom (dfunction N P) Vs F0 R0, exec-dfunction Dom (dfunction N1 P1) Vs F1 R1,
+  if (F0 = F1, R0 = R1) (print "same")
+     (std.map F0 val-string S0, std.map F1 val-string S1, print "derivative" S0 R0 "simplified" S1 R1).
+l2-same _ :- std.fatal-error "usage: ... -exec l2-same -- tangent|adjoint|adjoint-value <function> <argument>..".
+
+% l2-signature [Mode, Stage, Name]: prints the parameters of the L2 program of
+% Name, one per line as name:passing:type, then its result: the tangent, the
+% adjoint or the adjoint-value (Mode), before or after simplification (Stage:
+% derivative or simplified). The order is that of the generated C++.
+func l2-signature list string.
+l2-signature [Mode, Stage, Name] :- !,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal F | _]) true (std.fatal-error "no such function"),
+  l2-program Mode Stage F (dfunction _ Body), l2-param-strings Body 1 Ls, std.forall Ls (l\ print l).
+l2-signature _ :- std.fatal-error "usage: ... -exec l2-signature -- tangent|adjoint|adjoint-value derivative|simplified <function>".
+
+% l2-run [Mode, Stage, Name | Args]: executes that program over floats on Args,
+% one argument per parameter, read as for run; prints the final value of each
+% parameter, one per line, then the returned value, or "void".
+func l2-run list string.
+l2-run [Mode, Stage, Name | Args] :- !,
+  std.findall (primal (function Name _)) Ps,
+  if (Ps = [primal F | _]) true (std.fatal-error "no such function"),
+  l2-program Mode Stage F (dfunction N Body), floats Dom,
+  l2-read-arguments Body Args Vs,
+  exec-dfunction Dom (dfunction N Body) Vs Finals Ret,
+  std.forall Finals (v\ sigma S\ val-string v S, print S),
+  if (Ret = [R]) (val-string R SR, print SR) (print "void").
+l2-run _ :- std.fatal-error "usage: ... -exec l2-run -- tangent|adjoint|adjoint-value derivative|simplified <function> <argument>..".
+
+% signatures []: prints the signature of each function of the case, one per
+% line: its name, its arguments as name:type:role, and its result.
+func signatures list string.
+signatures _ :-
+  std.findall (primal _) Ps,
+  std.forall Ps (p\ sigma F S\ p = primal F, signature-string F S, print S).
+
+namespace adjudge {
+
+% l2-program Mode Stage F P: the L2 program the tool generates for F.
+func l2-program string, string, function -> dfunction.
+l2-program Mode Stage F P :-
+  if (check F (pr (some A) ok)) true (std.fatal-error "the function is refused (see diagnostics)"),
+  mode-value Mode V, annotate V A A1, differentiate Mode A1 P0,
+  if (Stage = "simplified") (simplify P0 P) (P = P0).
+
+% The parameters, as name:passing:type, with their names as the C++ will have them.
+func l2-param-strings scoped dbody, int -> list string.
+l2-param-strings (named N F) K L :- !, pi v\ dname v N =!=> l2-param-strings (F v) K L.
+l2-param-strings (fresh P F) K L :- !, X is P ^ int_to_string K, K1 is K + 1,
+  pi v\ dname v X =!=> l2-param-strings (F v) K1 L.
+l2-param-strings (done (dbody R Ps _)) _ L :-
+  std.map Ps (p\ s\ sigma P T V N W TS\ p = dparam P T V, var-name V N, pass-name P W, ty-string T TS,
+                    s is N ^ ":" ^ W ^ ":" ^ TS) L0,
+  if (R = d-returns-real) (std.append L0 ["-> returns real"] L) (std.append L0 ["-> void"] L).
+
+func pass-name dpass -> string.
+pass-name by-value "value".
+pass-name by-ref "ref".
+pass-name by-cref "cref".
+pass-name by-ref-unused "unused".
+
+% l2-read-arguments Body Ss Vs: one value per parameter, read from Ss by its type.
+func l2-read-arguments scoped dbody, list string -> list (val float).
+l2-read-arguments (named _ F) Ss Vs :- !, pi v\ l2-read-arguments (F v) Ss Vs.
+l2-read-arguments (fresh _ F) Ss Vs :- !, pi v\ l2-read-arguments (F v) Ss Vs.
+l2-read-arguments (done (dbody _ Ps _)) Ss Vs :- l2-read-params Ps Ss Vs.
+
+func l2-read-params list dparam, list string -> list (val float).
+l2-read-params [] [] [] :- !.
+l2-read-params [dparam _ T _ | Ps] Ss [V | Vs] :- !, read-argument T Ss V Rest, l2-read-params Ps Rest Vs.
+l2-read-params _ _ _ :- std.fatal-error "the arguments do not match the parameters".
+
+func signature-string function -> string.
+signature-string (function N D) S :- definition-strings D As R, std.string.concat " " [N | As] S0, S is S0 ^ " -> " ^ R.
+
+func definition-strings definition -> list string, string.
+definition-strings (body (returns T) _) [] R :- !, ty-string T TS, R is "returns " ^ TS.
+definition-strings (body (writes Y) _) [] R :- !, if (arg-name Y N) (R is "writes " ^ N) (R = "writes ?").
+definition-strings (arg N T Ro F) [A | As] R :-
+  ty-string T TS, term_to_string Ro RS, A is N ^ ":" ^ TS ^ ":" ^ RS,
+  pi x\ arg-name x N =!=> definition-strings (F x) As R.
+
+func arg-name term -> string.
+
+% read-arguments D Ss Vs: the values of the arguments of the definition D, read
+% from the strings Ss according to their types.
+func read-arguments definition, list string -> list (val float).
+read-arguments (body _ _) [] [] :- !.
+read-arguments (arg _ T _ F) Ss [V | Vs] :- !,
+  read-argument T Ss V Rest, pi x\ read-arguments (F x) Rest Vs.
+read-arguments _ _ _ :- std.fatal-error "the arguments do not match the declaration of the function".
+
+func read-argument ty, list string -> val float, list string.
+read-argument real [S | Ss] (v-real X) Ss :- !, X is string_to_real S.
+read-argument integer [S | Ss] (v-int K) Ss :- !, K is string_to_int S.
+read-argument (array N) Ss (v-array Xs) Rest :- std.take N Ss Ts, std.drop N Ss Rest, std.map Ts (s\ x\ x is string_to_real s) Xs.
+
+func split-at string, list string -> list string, list string.
+split-at X [X | L] [] L :- !.
+split-at X [Y | L] [Y | A] B :- split-at X L A B.
+
+func definition-decls definition -> list decl.
+definition-decls (body _ _) [] :- !.
+definition-decls (arg N T R F) [decl N T R | Ds] :- pi x\ definition-decls (F x) Ds.
+
+% seed Ds Vs Dots Ws: the arguments Vs as dual numbers, with their tangents
+% taken from Dots for the arguments that are not passive.
+func seed list decl, list (val float), list string -> list (val (dual float)).
+seed [] [] [] [] :- !.
+seed [decl _ integer _ | Ds] [v-int K | Vs] Ss [v-int K | Ws] :- !, seed Ds Vs Ss Ws.
+seed [decl _ real passive | Ds] [v-real X | Vs] Ss [v-real (dual X 0.0) | Ws] :- !, seed Ds Vs Ss Ws.
+seed [decl _ real _ | Ds] [v-real X | Vs] [S | Ss] [v-real (dual X DX) | Ws] :- !,
+  DX is string_to_real S, seed Ds Vs Ss Ws.
+seed [decl _ (array _) passive | Ds] [v-array Xs | Vs] Ss [v-array Ys | Ws] :- !,
+  std.map Xs (x\ y\ y = dual x 0.0) Ys, seed Ds Vs Ss Ws.
+seed [decl _ (array N) _ | Ds] [v-array Xs | Vs] Ss [v-array Ys | Ws] :- !,
+  std.take N Ss Ts, std.drop N Ss Rest,
+  std.map2 Xs Ts (x\ t\ y\ sigma DX\ DX is string_to_real t, y = dual x DX) Ys,
+  seed Ds Vs Rest Ws.
+seed _ _ _ _ :- std.fatal-error "the tangents do not match the declaration of the function".
+
+% dual-strings V SV SD: the value and the tangent of V.
+func dual-strings val (dual float) -> string, string.
+dual-strings (v-real (dual X D)) SX SD :- !, SX is real_to_string X, SD is real_to_string D.
+dual-strings (v-array Ys) SX SD :- !,
+  std.map Ys (y\ s\ sigma X D\ y = dual X D, s is real_to_string X) Xs, std.string.concat " " Xs SX,
+  std.map Ys (y\ s\ sigma X D\ y = dual X D, s is real_to_string D) Ds, std.string.concat " " Ds SD.
+dual-strings (v-int K) S "0" :- !, S is int_to_string K.
+dual-strings (v-bool B) S "0" :- if (B = tt) (S = "true") (S = "false").
+
+func val-string val float -> string.
+val-string (v-real X) S :- !, S is real_to_string X.
+val-string (v-int K) S :- !, S is int_to_string K.
+val-string (v-bool tt) "true" :- !.
+val-string (v-bool ff) "false" :- !.
+val-string (v-array Xs) S :- std.map Xs (x\ s\ s is real_to_string x) Ss, std.string.concat " " Ss S.
+
+}

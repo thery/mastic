@@ -1,0 +1,90 @@
+/* Hide indexes using non-uniform parameters                                 */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+shorten std.{assert!, do!, map-i, map}.
+
+namespace derive.invert {
+
+func the-inductive term -> int.
+func the-nup-for-idx int -> term.
+func the-suffix -> string.
+
+func invert indt-decl -> indt-decl.
+invert (parameter ID Imp Ty In) (parameter ID Imp Ty Out) :-
+  @pi-parameter ID Ty p\ invert (In p) (Out p).
+invert (inductive ID IsInd Arity Ks) (inductive ID1 IsInd Arity1 Ks1) :-
+  ID1 is ID ^ {the-suffix},
+  coq.arity->nparams Arity Nup,
+  trivial-arity Arity 0 Arity1,
+  coq.arity->term Arity ITy,
+  @pi-parameter ID ITy i\ the-inductive i Nup => std.map (Ks i) (invert-c Nup Arity1) (Ks1 i).
+
+func invert-c int, arity, indc-decl -> indc-decl.
+invert-c Nup ArityI (constructor ID ArityK) (constructor ID1 ArityK1) :-
+  ID1 is ID ^ {the-suffix},
+  invert-c-params Nup ArityI ArityK ArityK1.
+
+func invert-c-params int, arity, arity -> arity.
+invert-c-params Nup (parameter ID Imp Ty In) (parameter _ _ _ In1) (parameter ID Imp Ty Out):- Nup > 0, !,
+  Nup1 is Nup - 1,
+  @pi-parameter ID Ty p\ invert-c-params Nup1 (In p) (In1 p) (Out p).
+invert-c-params 0 Arity KArity Out :- invert-c-params-idx 0 Arity KArity Out.
+
+func invert-c-params-idx int, arity, arity -> arity.
+invert-c-params-idx Idx (parameter ID Imp Ty In) KArity (parameter ID Imp Ty Out) :-
+  Idx1 is Idx + 1,
+  @pi-parameter ID Ty p\ the-nup-for-idx Idx p =!=> invert-c-params-idx Idx1 (In p) KArity (Out p).
+invert-c-params-idx _ (arity _) KArity KArity1 :-
+  invert-c-arity KArity KArity1.
+
+func invert-c-arity arity -> arity.
+invert-c-arity (parameter ID Imp Ty In) (parameter ID Imp Ty Out) :-
+  @pi-parameter ID Ty p\ invert-c-arity (In p) (Out p).
+invert-c-arity (arity T) (arity T1) :- invert-c-ty T T1.
+
+func invert-c-ty term -> term.
+invert-c-ty (prod N S T) (prod N S T1) :- !,
+  @pi-decl N S x\ invert-c-ty (T x) (T1 x).
+invert-c-ty I I :- the-inductive I _, !.
+invert-c-ty (app[I|Args]) Out :- the-inductive I Nup, !,
+  std.split-at Nup Args NUArgs Indexes,
+  invert-c-ty-eq Indexes 0 (app[I|NUArgs]) Out.
+
+func invert-c-ty-eq list term, int, term -> term.
+invert-c-ty-eq [] _ X X.
+invert-c-ty-eq [I|Idxs] N Acc {{ lp:V = lp:I -> lp:Out }} :-
+  std.assert! (the-nup-for-idx N V) "no variable to equate to index expression",
+  M is N + 1,
+  invert-c-ty-eq Idxs M {coq.mk-app Acc [V]} Out.
+
+func trivial-arity arity, int -> arity.
+trivial-arity (parameter ID Imp Ty In) Ni (parameter ID Imp Ty Out) :-
+  @pi-parameter ID Ty p\ trivial-arity (In p) Ni (Out p).
+trivial-arity (arity (prod Name Ty In)) Ni (parameter ID explicit Ty Out) :- !,
+  ID is "idx" ^ {term_to_string Ni},
+  Ni1 is Ni + 1,
+  @pi-decl Name Ty p\ trivial-arity (arity (In p)) Ni1 (Out p).
+trivial-arity (arity T) _ (arity T).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+func main inductive, string -> list (pred).
+main GR Suffix Clauses :- do! [
+  coq.env.indt-decl GR Decl,
+  the-suffix Suffix => invert Decl Decl1,
+  std.assert-ok! (coq.typecheck-indt-decl Decl1) "derive.invert generates illtyped term",
+  coq.env.add-indt Decl1 Inv,
+  coq.env.indt GR _ _ _ _ Ks _,
+  coq.env.indt Inv _ _ _ _ KIs _,
+
+  Clauses = [invert-db (indt GR) (indt Inv) | {std.map2 Ks KIs mk-k-clause}],
+  std.forall Clauses (c\coq.elpi.accumulate _ "derive.invert.db" (clause _ _ c))
+].
+
+func mk-k-clause constructor, constructor -> (pred).
+mk-k-clause K1 K2 (invert-db (indc K1) (indc K2)).
+
+}
+
+% vim: set spelllang=:

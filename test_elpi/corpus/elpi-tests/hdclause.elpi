@@ -1,0 +1,16 @@
+data foo.
+
+symb a ((int -> foo) -> foo) -> foo.
+symb b foo -> foo.
+
+pred p -> (foo -> foo), foo.
+pred q -> (foo -> foo), foo.
+
+p K (a f\ K (f 0)).
+q K R :- R = (a f\ K (f 0)).
+
+main :-
+  (pi y\ p b (F y)),
+  (pi y\ q b (F y)),
+  (pi x y\ q b (F y)),
+  (pi x y\ p b (F y)).

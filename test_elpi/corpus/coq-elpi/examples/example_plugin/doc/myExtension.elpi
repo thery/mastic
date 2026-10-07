@@ -1,0 +1,13 @@
+
+
+% description for the new elpi type
+builtin data myType.
+builtin symb constant : int -> myType = "1". 
+builtin symb sumof    : myType -> myType -> myType = "1". 
+
+% [compute Expression Result] Result is the normal form of Expression
+builtin func compute myType -> myType.
+
+
+
+

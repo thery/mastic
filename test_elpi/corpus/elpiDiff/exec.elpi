@@ -1,0 +1,96 @@
+% exec.elpi — the evaluator of L2, the derivative IR: executing the programs
+% the tool generates, tangents and adjoints, before and after simplification.
+%
+% L2 is imperative, so its evaluator threads a store: a list of pairs of a
+% variable and its value. A variable is a `dvar`, an Elpi variable bound by
+% the `scoped` binders of the function, or one derived from it (`dot-of v`,
+% `bar-of v`, `tape-of v`): the store needs no names. The values are those of
+% the evaluator of L0 (eval.elpi), and the operations compute as there, in a
+% domain of numbers (numbers.elpi); a tape is a list of reals.
+%
+% `exec-dfunction D F Args Finals Ret`: the function F, called with Args, one
+% value per parameter in the order of its signature, leaves the parameters with
+% the values Finals (a parameter passed by reference returns its result there)
+% and returns Ret, [V] for a function that returns V, [] otherwise.
+
+shorten adjudge.{ dom-lit, dom-op2, eval-op1, eval-op2, replace-nth }.
+
+type v-tape list N -> val N.               % a tape, the last value pushed first
+type returned dvar.                        % where `d-return` leaves the returned value
+
+namespace adjudge {
+
+typeabbrev (store N) (list (pair dvar (val N))).
+
+func exec-dfunction domain N, dfunction, list (val N) -> list (val N), list (val N).
+exec-dfunction D (dfunction _ S) Args Finals Ret :- exec-scoped D S Args Finals Ret.
+
+% The variables of the function are opened first, as fresh Elpi variables.
+func exec-scoped domain N, scoped dbody, list (val N) -> list (val N), list (val N).
+exec-scoped D (named _ F) Args Finals Ret :- !, pi v\ exec-scoped D (F v) Args Finals Ret.
+exec-scoped D (fresh _ F) Args Finals Ret :- !, pi v\ exec-scoped D (F v) Args Finals Ret.
+exec-scoped D (done (dbody R Ps Ss)) Args Finals Ret :-
+  std.map2 Ps Args (p\ a\ b\ sigma P T V\ p = dparam P T V, b = pr V a) S0,
+  exec-stmts D Ss S0 S1,
+  std.map Ps (p\ f\ sigma P T V\ p = dparam P T V, store-get S1 V f) Finals,
+  if (R = d-returns-real) (store-get S1 returned X, Ret = [X]) (Ret = []).
+
+% The store.
+func store-get store N, dvar -> val N.
+store-get [pr K V | _] X V :- K = X, !.
+store-get [_ | S] X V :- store-get S X V.
+
+func store-set store N, dvar, val N -> store N.
+store-set [] X V [pr X V] :- !.
+store-set [pr K _ | S] X V [pr K V | S] :- K = X, !.
+store-set [B | S] X V [B | S1] :- store-set S X V S1.
+
+% Expressions.
+func xeval domain N, store N, dexpr -> val N.
+xeval _ S (d-var X) V :- !, store-get S X V.
+xeval D _ (d-real L) (v-real X) :- !, dom-lit D L X.
+xeval _ _ (d-int K) (v-int K) :- !.
+xeval D S (d-at A I) (v-real X) :- !, xeval D S A (v-array L), xeval D S I (v-int K), std.nth K L X.
+xeval D S (d-op1 F A) V :- !, xeval D S A VA, eval-op1 D F VA V.
+xeval D S (d-op2 F A B) V :- xeval D S A VA, xeval D S B VB, eval-op2 D F VA VB V.
+
+% assign D S L V S1: the location L, a variable or an element of an array, receives V.
+func assign domain N, store N, dexpr, val N -> store N.
+assign _ S (d-var X) V S1 :- !, store-set S X V S1.
+assign D S (d-at (d-var X) I) (v-real E) S1 :-
+  store-get S X (v-array L), xeval D S I (v-int K), replace-nth K E L L1, store-set S X (v-array L1) S1.
+
+% Statements.
+func exec-stmts domain N, list dstmt, store N -> store N.
+exec-stmts _ [] S S :- !.
+exec-stmts D [St | Sts] S0 S2 :- exec D St S0 S1, exec-stmts D Sts S1 S2.
+
+func exec domain N, dstmt, store N -> store N.
+exec D (d-define _ X E) S S1 :- !, xeval D S E V, store-set S X V S1.
+exec D (d-real-var X) S S1 :- !, dom-lit D "0" Z, store-set S X (v-real Z) S1.     % T x{}: zero
+exec _ (d-tape X) S S1 :- !, store-set S X (v-tape []) S1.
+exec D (d-assign L E) S S1 :- !, xeval D S E V, assign D S L V S1.
+exec D (d-increment L E) S S1 :- !,
+  xeval D S L (v-real A), xeval D S E (v-real B), dom-op2 D add A B C, assign D S L (v-real C) S1.
+exec D (d-branch C T E) S S1 :- !,
+  xeval D S C (v-bool B), if (B = tt) (exec-stmts D T S S1) (exec-stmts D E S S1).
+exec D (d-for I Lo Hi B) S S1 :- !,
+  xeval D S Lo (v-int L), xeval D S Hi (v-int H), exec-up D I L H B S S1.
+exec D (d-for-back I Lo Hi B) S S1 :- !,
+  xeval D S Lo (v-int L), xeval D S Hi (v-int H), H1 is H - 1, exec-down D I L H1 B S S1.
+exec D (d-push T E) S S1 :- !,
+  xeval D S E (v-real X), store-get S T (v-tape L), store-set S T (v-tape [X | L]) S1.
+exec D (d-pop T L) S S2 :- !,
+  store-get S T (v-tape [X | Xs]), store-set S T (v-tape Xs) S1, assign D S1 L (v-real X) S2.
+exec D (d-return E) S S1 :- xeval D S E V, store-set S returned V S1.
+
+% for I in [L, H), upward; for I from H down to L, downward.
+func exec-up domain N, dvar, int, int, list dstmt, store N -> store N.
+exec-up _ _ L H _ S S :- L >= H, !.
+exec-up D I L H B S S2 :- store-set S I (v-int L) S0, exec-stmts D B S0 S1, L1 is L + 1, exec-up D I L1 H B S1 S2.
+
+func exec-down domain N, dvar, int, int, list dstmt, store N -> store N.
+exec-down _ _ L H _ S S :- H < L, !.
+exec-down D I L H B S S2 :- store-set S I (v-int H) S0, exec-stmts D B S0 S1, H1 is H - 1, exec-down D I L H1 B S1 S2.
+
+}

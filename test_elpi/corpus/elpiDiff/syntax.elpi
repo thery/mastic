@@ -1,0 +1,85 @@
+% syntax.elpi — the object language: a Wengert list with binders.
+%
+% A function is a term, and every variable of the C++ is a variable bound by an
+% Elpi λ-abstraction (λ-tree syntax): `arg` binds an argument of the function,
+% `let` an intermediate value, `map` and `fold` a loop index and a loop state.
+% The bound variable *is* the value, so versions, scopes and fresh names are
+% handled by the logic, not by symbol tables, and no term names a variable with
+% a string. Loops are the two array combinators of functional programming: `map`
+% (element-wise, no carried state) and `fold` (a recurrence on a carried state,
+% either a real or an array updated in place).
+%
+% This is L0, the source language. Before any analysis, `normalize` (anf.elpi)
+% translates a function into L1, its A-normal form, a language of its own.
+
+% The elementary operations are constants of two types, by arity, declared with
+% their table in operations.elpi. An operator the tool does not know is still a
+% term, which well-formed refuses with a reason.
+kind unary type.
+kind binary type.
+type unknown1 string -> unary.
+type unknown2 string -> binary.
+
+kind term type.
+type num   string -> term.                          % a real literal, spelled as in C++: "2", "0.9"
+type nat   int -> term.                             % an integer literal
+type op1   unary -> term -> term.                   % a unary elementary operation
+type op2   binary -> term -> term -> term.          % a binary elementary operation
+type get   term -> term -> term.                    % a[i]
+type set   term -> term -> term -> term.            % a with a[i] replaced: the next version of a
+type let   term -> (term -> term) -> term.          % let x = e in body
+type ite   term -> term -> term -> term.            % if c then t else e, where c is passive
+type map   term -> term -> (term -> term) -> term.  % the array [ body i | lo <= i < hi ]
+type fold  term -> term -> term -> (term -> term -> term) -> term.
+                                                    % s := init; for lo <= i < hi: s := body i s
+
+kind ty type.
+type real    ty.
+type integer ty.
+type boolean ty.
+type array   int -> ty.                             % an array of reals with a static extent
+
+% The role of an argument. The roles are Tapenade's independent and dependent
+% variables; they are to a C++ function what the modes `i:` and `o:` are to a
+% predicate. What a numerical code calls a parameter, a value that is given and
+% never differentiated, is a passive argument.
+kind role type.
+type independent role.                              % an input we differentiate with respect to
+type dependent   role.                              % a real or an array the function writes and never reads; its derivative is wanted
+type inout       role.                              % a real or an array the function reads, then overwrites: independent and dependent
+type passive     role.                              % neither
+
+kind result type.
+type returns ty -> result.                          % the body's value is returned
+type writes  term -> result.                        % the body's value is stored in this argument
+
+% The definition of a function: one binder per argument, in the order of the
+% C++ signature, then where the result goes and the body. The string is the C++
+% name of the argument, kept for the generated code; the body mentions the
+% bound variable:
+%   function "rescale" (arg "x" real inout x\ arg "w" real independent w\
+%     body (writes x) (op2 mul (op2 mul w x) x))
+kind definition type.
+type arg  string -> ty -> role -> (term -> definition) -> definition.
+type body result -> term -> definition.
+
+kind function type.
+type function string -> definition -> function.
+
+% An argument as plain data, for the signatures of the generated code.
+kind decl type.
+type decl string -> ty -> role -> decl.
+
+namespace adjudge {
+
+% written-role R: the function writes an argument of role R.
+func written-role role.
+written-role dependent :- !.
+written-role inout.
+
+% varied-role R: an argument of role R carries a derivative on entry.
+func varied-role role.
+varied-role independent :- !.
+varied-role inout.
+
+}

@@ -1,0 +1,66 @@
+% annotate.elpi — from L1 to L1ᵃ: the analyses, run once, recorded on the term.
+%
+% Every let gets `let-ann Varied Active Computed` and every fold
+% `fold-ann Varied Live Records` (anf.elpi). The transformations then read
+% these flags instead of running activity.elpi and tbr.elpi themselves, so that
+% tangent.elpi is the plain linearization and adjoint.elpi the plain
+% transposition.
+%
+% What the adjoint needs of a let depends on the sweep that transposes it: the
+% body of the function is transposed in the forward sweep, the bodies of
+% branches and loops are replayed inside the reverse sweep. Each let is
+% transposed in exactly one of them, determined by where it sits, so one
+% annotation per let suffices.
+
+shorten adjudge.{ computes-value, varied, varied-value, varied-role, let-binder, fold-binders, fold-varied, sweep, forward, replay, needs, records, state-live, atom-member }.
+
+namespace adjudge {
+
+% annotate Value F F1: F1 is F annotated for a tangent or an adjoint that
+% computes the derivative only (Value = ff), or for an adjoint that computes the
+% value of the function as well (Value = tt): then its forward sweep computes
+% everything the result depends on.
+func annotate bool, afunction bare -> afunction ann.
+annotate tt (a-function N D) (a-function N D1) :- !, computes-value =!=> annotate-definition D D1.
+annotate ff (a-function N D) (a-function N D1) :- annotate-definition D D1.
+
+% The arguments are opened with their activity, as by the transformations.
+func annotate-definition adefinition bare -> adefinition ann.
+annotate-definition (a-arg N T R F) (a-arg N T R F1) :- varied-role R, !,
+  pi x\ varied x =!=> annotate-definition (F x) (F1 x).
+annotate-definition (a-arg N T R F) (a-arg N T R F1) :- !,
+  pi x\ annotate-definition (F x) (F1 x).
+annotate-definition (a-body R B) (a-body R B1) :- annotate-body forward B B1.
+
+% annotate-body M B B1: B transposed in sweep M. A let is active when it is
+% varied and useful to the result; its value is computed by its sweep when the
+% rest of the body reads it, and, in the forward sweep, when a fold in it records.
+func annotate-body sweep, anf bare -> anf ann.
+annotate-body M (a-let _ E B) (a-let (let-ann Varied Active Computed) E1 B1) :- !,
+  if (varied-value E) (Varied = tt) (Varied = ff),
+  let-binder E (x\ needs M (B x) (U x) (L x),
+                  if (atom-member x (U x)) (Useful = tt) (Useful = ff),
+                  if (atom-member x (L x)) (Needed = tt) (Needed = ff)),
+  if (Varied = tt, Useful = tt) (Active = tt) (Active = ff),
+  if (Needed = tt ; M = forward, records E) (Computed = tt) (Computed = ff),
+  annotate-value E E1,
+  let-binder E (x\ annotate-body M (B x) (B1 x)).
+annotate-body _ (a-ret X) (a-ret X).
+
+% The bodies inside a value are replayed.
+func annotate-value value bare -> value ann.
+annotate-value (a-op1 F A) (a-op1 F A) :- !.
+annotate-value (a-op2 F A B) (a-op2 F A B) :- !.
+annotate-value (a-get A I) (a-get A I) :- !.
+annotate-value (a-set A I V) (a-set A I V) :- !.
+annotate-value (a-ite C T E) (a-ite C T1 E1) :- !,
+  annotate-body replay T T1, annotate-body replay E E1.
+annotate-value (a-map Lo Hi B) (a-map Lo Hi B1) :- !,
+  pi i\ annotate-body replay (B i) (B1 i).
+annotate-value (a-fold _ Lo Hi I B) (a-fold (fold-ann Varied Live Records) Lo Hi I B1) :-
+  if (fold-varied I B) (Varied = tt) (Varied = ff),
+  if (state-live I B) (Live = tt) (Live = ff),
+  if (records (a-fold bare Lo Hi I B)) (Records = tt) (Records = ff),
+  fold-binders I B (i\ s\ annotate-body replay (B i s) (B1 i s)).
+
+}

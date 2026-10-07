@@ -1,0 +1,127 @@
+% adjudge.elpi — the tool: accumulates the judgments and runs them on a case.
+%
+% A case is a file that accumulates this one and declares its `primal` functions:
+%   elpi -I <elpiDiff> cases/01-expression/primal.elpi -exec main -- cases/01-expression adjoint
+
+accumulate syntax.
+accumulate anf.
+accumulate operations.
+accumulate "well-formed".
+accumulate activity.
+accumulate tbr.
+accumulate annotate.
+accumulate derivative.
+accumulate tangent.
+accumulate adjoint.
+accumulate simplify.
+accumulate target.
+accumulate lower.
+accumulate cxx.
+accumulate show.
+accumulate dump.
+
+pred primal o:function.
+
+shorten adjudge.{ check, mode, dump-function, pr-afunction, no-ann, ann-string, pr-dfunction, function-string, annotate, simplify, expressible, normalize, well-formed, tangent, adjoint, lower, header-string, transform, report, write-file, show-function }.
+
+% main [Dir, Mode]: reads Dir/primal.elpi and writes Dir/tangent.hpp or
+% Dir/adjoint.hpp, one header for all the well-formed functions, and
+% Dir/diagnostics.txt for the refused ones. main [Dir, Mode, Out] writes into Out instead.
+func main list string.
+main [Dir, Mode] :- !, main [Dir, Mode, Dir].
+main [Dir, Mode, Out] :- !,
+  if (mode Mode) true
+     (M is "unknown mode `" ^ Mode ^ "`: expected tangent, adjoint or adjoint-value", std.fatal-error M),
+  std.findall (primal _) Ps,
+  std.map Ps (p\ f\ p = primal f) Fs,
+  std.map Fs check Rs,
+  std.map Rs (r\ d\ sigma A\ r = pr A d) Ds,
+  report Out Fs Ds,
+  std.map-filter Rs (r\ c\ sigma F\ r = pr (some F) ok, transform Mode F c) Cs,
+  if (Cs = []) true
+     (File is Mode ^ ".hpp", Source is Dir ^ "/primal.elpi", header-string Source Cs Text, write-file Out File Text).
+main _ :- std.fatal-error "usage: elpi -I <elpiDiff> <case>/primal.elpi -exec main -- <case> tangent|adjoint|adjoint-value [<output directory>]".
+
+% terms [Mode]: prints the tangent or adjoint program of each well-formed function
+% of the case as an Elpi term, before it is printed as C++.
+func terms list string.
+terms [Mode] :- !,
+  if (mode Mode) true
+     (M is "unknown mode `" ^ Mode ^ "`: expected tangent, adjoint or adjoint-value", std.fatal-error M),
+  std.findall (primal _) Ps,
+  std.map Ps (p\ f\ p = primal f) Fs,
+  std.map Fs check Rs,
+  std.forall Rs (r\ sigma F C S\
+    if (r = pr (some F) ok) (transform Mode F C, show-function C S, print S) true).
+terms _ :- std.fatal-error "usage: elpi -I <elpiDiff> <case>/primal.elpi -exec terms -- tangent|adjoint|adjoint-value".
+
+% dump Stage: prints each function of the case at a stage of the pipeline, in
+% a readable form (dump.elpi): anf, annotated, or, with a mode, derivative,
+% simplified, target.
+func dump list string.
+dump Stage :-
+  std.findall (primal _) Ps,
+  std.map Ps (p\ f\ p = primal f) Fs,
+  std.forall Fs (dump-function Stage).
+
+namespace adjudge {
+
+% check F R: R pairs F in L1, when it is expressible there, with its diagnostic.
+func check function -> pair (option (afunction bare)) diagnostic.
+check F (pr A D) :-
+  if (expressible F)
+     (normalize F F1, well-formed F1 D, A = some F1)
+     (A = none, D = error "a function can only write a dependent or inout argument").
+
+func dump-function list string, function.
+dump-function Stage (function N D) :-
+  check (function N D) R,
+  if (R = pr (some F) ok)
+     (dump-stage Stage F Ls, std.string.concat "\n" Ls Text, print Text, print "")
+     (R = pr _ (error M), S is "// " ^ N ^ ": refused: " ^ M, print S, print "").
+
+func dump-stage list string, afunction bare -> list string.
+dump-stage ["anf"] F L :- !, pr-afunction no-ann F L.
+dump-stage ["annotated"] F L :- !, annotate ff F A, pr-afunction ann-string A L.
+dump-stage ["annotated", Mode] F L :- mode Mode, !, mode-value Mode V, annotate V F A, pr-afunction ann-string A L.
+dump-stage ["derivative", Mode] F L :- mode Mode, !,
+  mode-value Mode V, annotate V F A, differentiate Mode A D, pr-dfunction D L.
+dump-stage ["simplified", Mode] F L :- mode Mode, !,
+  mode-value Mode V, annotate V F A, differentiate Mode A D, simplify D D1, pr-dfunction D1 L.
+dump-stage ["target", Mode] F [S] :- mode Mode, !,
+  transform Mode F C, function-string C S.
+dump-stage _ _ _ :-
+  std.fatal-error "usage: elpi -I <elpiDiff> <case>/primal.elpi -exec dump -- anf|annotated [<mode>]|derivative <mode>|simplified <mode>|target <mode>".
+
+func transform string, afunction bare -> cfunction.
+transform Mode F C :- mode-value Mode V, annotate V F A, differentiate Mode A D, simplify D D1, lower D1 C.
+
+% The modes: tangent, adjoint (the derivative only) and adjoint-value (the
+% value and the derivative); only the last one computes the value in its
+% forward sweep.
+func mode string.
+mode M :- std.mem! ["tangent", "adjoint", "adjoint-value"] M.
+
+func mode-value string -> bool.
+mode-value "adjoint-value" tt :- !.
+mode-value _ ff.
+
+% differentiate Mode F D: the derivative program, in the derivative IR.
+func differentiate string, afunction ann -> dfunction.
+differentiate "tangent" F D :- !, tangent F D.
+differentiate "adjoint" F D :- !, adjoint ff F D.
+differentiate "adjoint-value" F D :- adjoint tt F D.
+
+func report string, list function, list diagnostic.
+report Dir Fs Ds :-
+  std.map2 Fs Ds (f\ d\ l\ sigma N M\ f = function N _, if (d = error M) (l is N ^ ": " ^ M) (l = "")) Ls0,
+  std.filter Ls0 (l\ not (l = "")) Ls,
+  if (Ls = []) true (std.string.concat "\n" Ls Text, Text1 is Text ^ "\n", write-file Dir "diagnostics.txt" Text1).
+
+func write-file string, string, string.
+write-file Dir File Text :-
+  Path is Dir ^ "/" ^ File,
+  open_out Path Out, output Out Text, close_out Out,
+  print "wrote" Path.
+
+}

@@ -1,0 +1,150 @@
+/* Reduction (whd, hd-beta, ...)                                             */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+% Entry points
+
+typeabbrev stack (list term).
+
+func hd-beta term, stack -> term, stack.
+func hd-beta-zeta term, stack -> term, stack.
+func hd-beta-zeta-reduce term -> term.
+func whd term, stack -> term, stack.
+func whd-indc term -> constructor, stack.
+func unwind term, stack -> term.
+func whd1 term -> term.
+:index (_ 1) func coq.mk-app term, list term -> term.
+func coq.mk-app-uvar any, list term -> term.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+shorten std.{append, nth, drop}.
+
+coq.mk-app HD [] HD :- !.
+coq.mk-app (app L) Args R :- !, append L Args LArgs, R = app LArgs.
+coq.mk-app (fun _ _ F) [A|Args] R :- !, coq.mk-app (F A) Args R.
+coq.mk-app (let _ _ A F) Args R :- !, coq.mk-app (F A) Args R.
+coq.mk-app HD Args (app [HD|Args]).
+
+coq.mk-app-uvar HD [] HD :- !.
+coq.mk-app-uvar ((uvar as K) : term) [A|Args] R :- !, std.unsafe-cast K K', coq.mk-app-uvar (K' A) Args R.
+
+% indirection, to be used if we add to the stack "match" frames
+unwind T A R :- if (var T) (coq.mk-app-uvar T A R) (coq.mk-app T A R).
+
+func  nth-stack int, stack -> stack, term, stack.
+nth-stack 0 [X|XS] [] X XS :- !.
+nth-stack N [X|XS] [X|Before] At After :-
+  M is N - 1, nth-stack M XS Before At After.
+
+% whd beta-iota-delta-zeta, main code
+whd (app [Hd|Args]) C X XC :- !, whd Hd {append Args C} X XC.
+whd (fun _ _ _ as X) [] X [] :- !.
+whd (fun N T F) [B|C] X XC :- !,
+  (pi x\ def x N T B => cache x BN_ => whd (F x) C (F1 x) (C1 x)), X = F1 B, XC = C1 B.
+whd (let N T B F) C X XC :- !,
+  (pi x\ def x N T B => cache x BN_ => whd (F x) C (F1 x) (C1 x)), X = F1 B, XC = C1 B.
+whd (global (const GR)) C X XC :- unfold GR none C D DC, !, whd D DC X XC.
+whd (pglobal (const GR) I) C X XC :- unfold GR (some I) C D DC, !, whd D DC X XC.
+whd (primitive (proj _ N)) [A|C] X XC :- whd-indc A _ KA, !,
+  whd {proj-red KA N C} X XC.
+whd (global (const GR) as HD) C X XC :- coq.env.primitive? GR, !,
+  unwind HD C Orig,
+  coq.reduction.lazy.whd_all Orig R,
+  if (same_term Orig R) (X = HD, XC = C) (whd R [] X XC).
+whd (match A _ L) C X XC :- whd-indc A GR KA, !,
+  whd {match-red GR KA L C} X XC.
+whd (fix _ N _ F as Fix) C X XC :- nth-stack N C LA A RA, whd-indc A GR KA, !,
+  whd {fix-red F Fix LA GR KA RA} X XC.
+whd (mfix Fno N MF) C X XC :-
+  nth-stack N C LA A RA, whd-indc A GR KA, !,
+  whd-mfix MF MF 0 Fno LA GR KA RA X XC.
+whd N C X XC :- name N, def N _ _ V, !, cache-whd N VN V, whd VN C X XC.
+whd X C X C.
+
+func whd-mfix mfix-block, mfix-block, int, int, stack, constructor, stack, stack -> term, stack.
+whd-mfix (mfix-ty _ Rno _ F) MF Cur Fixno LA K KA RA X XC :-
+  whd-mfix (F (mfix Cur Rno MF)) MF {calc (Cur + 1)} Fixno LA K KA RA X XC.
+whd-mfix (mfix-bo Bs) _ _ Fixno LA K KA RA X XC :-
+  append LA [{coq.mk-app (global (indc K)) KA}|RA] ArgsWRedRecNo,
+  std.nth Fixno Bs B,
+  whd B ArgsWRedRecNo X XC.
+
+func mcofix-unroll mcofix-block, mcofix-block, int, int -> term.
+mcofix-unroll (mcofix-ty _ _ F) MF Cur Fixno R :-
+  mcofix-unroll (F (mcofix Cur MF)) MF {calc (Cur + 1)} Fixno R.
+mcofix-unroll (mcofix-bo Bs) _ _ Fixno R :-
+  std.nth Fixno Bs R.
+
+% assert A reduces to a constructor
+func whd-indc-val term, stack -> constructor, stack.
+whd-indc-val (global (indc GR)) C GR C :- !.
+whd-indc-val (pglobal (indc GR) _) C GR C :- !.
+whd-indc-val (cofix _ _ F as Self) C GR KA :- !,
+  whd-indc {unwind (F Self) C} GR KA.
+whd-indc-val (mcofix Fno MF) C GR KA :- !,
+  mcofix-unroll MF MF 0 Fno Body, !,
+  whd-indc {unwind Body C} GR KA.
+
+whd-indc A GR KA :- whd A [] VA C, !, not(var VA), whd-indc-val VA C GR KA.
+
+% [whd1 T R] asserts progress was made in reducing T to R.
+whd1 T R :-
+  whd T [] HD ARGS,
+  unwind HD ARGS R,
+  not(same_term T R).
+
+% iota step
+:index (1)
+func match-red constructor, list term, list term, stack -> term, stack.
+match-red GR KArgs BL C X XC :-
+  coq.env.indc GR Lno _ Ki _,
+  drop Lno KArgs Args,
+  nth Ki BL Bi,
+  hd-beta {coq.mk-app Bi Args} C X XC.
+
+:index (1)
+func proj-red list term, int, stack -> term, stack.
+proj-red Args FieldNo C V C :-
+  nth FieldNo Args V.
+
+% iota step
+:index (1)
+func fix-red
+  (term -> term), term,
+  list term, constructor, list term, list term -> term, stack. 
+fix-red F Fix LA GR KA RA X XC :-
+  append LA [{coq.mk-app (global (indc GR)) KA}|RA] ArgsWRedRecNo,
+  hd-beta {coq.mk-app (F Fix) ArgsWRedRecNo} [] X XC.
+
+:index (_ 2)
+func unfold % delta (global constants) + hd-beta
+  constant,             % name
+  option univ-instance, % universe instance if the constant is universe polymorphic
+  stack                 % args
+  -> term,              % body
+  stack.                % args after hd-beta
+unfold GR none A BO BOC :- coq.env.const GR (some B) _, hd-beta B A BO BOC.
+unfold GR (some I) A BO BOC :- (@uinstance! I ==> coq.env.const GR (some B) _), hd-beta B A BO BOC.
+
+% ensures its first argument is the whd of the second
+:index (1)
+func cache-whd term, term, term ->.
+cache-whd N K V :- cache N VN, var VN, !, whd V [] X XC, unwind X XC VN, K = VN.
+cache-whd N K _ :- cache N K, !.
+cache-whd N _ _ :- coq.error "anomaly: def with no cache:" {coq.term->string N}.
+
+hd-beta (app [Hd|Args]) S X C :- !, hd-beta Hd {append Args S} X C.
+hd-beta (fun _ _ F) [A|AS] X C :- !, hd-beta (F A) AS X C.
+:name "hd-beta:end"
+hd-beta X C X C.
+
+hd-beta-zeta (app [Hd|Args]) S X C :- !, hd-beta-zeta Hd {append Args S} X C.
+hd-beta-zeta (fun _ _ F) [A|AS] X C :- !, hd-beta-zeta (F A) AS X C.
+hd-beta-zeta (let _ _ B F) AS X C :- !, hd-beta-zeta (F B) AS X C.
+:name "hd-beta-zeta:end"
+hd-beta-zeta X C X C.
+
+hd-beta-zeta-reduce T R :- hd-beta-zeta T [] H S, unwind H S R.
+
+

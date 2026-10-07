@@ -1,0 +1,24 @@
+/* To test: query q X. The only answer should be X = ok. */
+
+data i.
+symb ko i.
+symb ok i.
+symb four i.
+symb two i.
+symb three i.
+pred q -> i.
+pred d -> i.
+pred c -> i.
+pred b -> i.
+pred a -> i.
+
+q X :- a X.
+q ok.
+a ko :- b Y, !, d Z, !, c Z.
+a two.
+b three.
+b four.
+c four.
+d three.
+d four.
+main :- q X, X = ok.

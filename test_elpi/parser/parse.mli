@@ -1,0 +1,39 @@
+
+(* elpi: embedded lambda prolog interpreter                                  *)
+(* license: GNU Lesser General Public License Version 2.1 or later           *)
+(* ------------------------------------------------------------------------- *)
+
+open Elpi_util
+open Elpi_lexer_config
+
+exception ParseError of Util.Loc.t * string
+
+module type Parser = sig
+  val program : file:string -> Ast.Program.t
+  val goal : loc:Util.Loc.t -> text:string -> Ast.Goal.t
+  
+  val goal_from : loc:Util.Loc.t -> Lexing.lexbuf -> Ast.Goal.t
+  val program_from : loc:Util.Loc.t -> digest:Digest.t -> Lexing.lexbuf -> Ast.Program.t
+end
+
+module type Parser_w_Internals = sig
+  include Parser
+
+  module Internal : sig
+    val infix_SYMB : (Lexing.lexbuf -> Tokens.token) -> Lexing.lexbuf -> Ast.Func.t
+    val prefix_SYMB : (Lexing.lexbuf -> Tokens.token) -> Lexing.lexbuf -> Ast.Func.t
+    val postfix_SYMB : (Lexing.lexbuf -> Tokens.token) -> Lexing.lexbuf -> Ast.Func.t
+
+    (* error-resilient parsing, with Mastic: never fails, the errors are
+       returned with the tokens inserted by the recovery *)
+    val program_resilient : Lexing.lexbuf ->
+      Mastic.ErrorResilientParser.error list * Mastic.ErrorResilientParser.completion list * Ast.Program.decl list
+  end
+end
+
+module type Config = sig
+  val versions : (int * int * int) Util.StrMap.t
+  val resolver : ?cwd:string -> unit:string -> unit -> string
+end
+
+module Make(C : Config) : Parser_w_Internals

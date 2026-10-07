@@ -1,0 +1,51 @@
+% show.elpi — a generated function printed as an Elpi term, one statement per
+% line: the tangent or the adjoint program before cxx.elpi prints it as C++.
+
+namespace adjudge {
+
+func quote string -> string.
+quote S Q :- Q is "\"" ^ S ^ "\"".
+
+func show-expr expr -> string.
+show-expr (id N) S :- !, quote N Q, S is "id " ^ Q.
+show-expr (lit L) S :- !, quote L Q, S is "lit " ^ Q.
+show-expr (at A I) S :- !, show-operand A SA, show-operand I SI, S is "at " ^ SA ^ " " ^ SI.
+show-expr (call F Args) S :- quote F Q, std.map Args show-expr Ss, std.string.concat ", " Ss SA, S is "call " ^ Q ^ " [" ^ SA ^ "]".
+
+% an expression as an argument: parenthesized
+func show-operand expr -> string.
+show-operand E S :- show-expr E S0, S is "(" ^ S0 ^ ")".
+
+func show-block string, list stmt -> string.
+show-block In [] S :- !, S is In ^ "[]".
+show-block In Stmts S :-
+  In2 is In ^ "  ",
+  std.map Stmts (show-stmt In2) Ls, std.string.concat ",\n" Ls Body,
+  S is In ^ "[\n" ^ Body ^ "\n" ^ In ^ "]".
+
+func show-stmt string, stmt -> string.
+show-stmt In (declare T N E) S :- !, quote T QT, quote N QN, show-operand E SE, S is In ^ "declare " ^ QT ^ " " ^ QN ^ " " ^ SE.
+show-stmt In (allocate T N) S :- !, quote T QT, quote N QN, S is In ^ "allocate " ^ QT ^ " " ^ QN.
+show-stmt In (assign A B) S :- !, show-operand A SA, show-operand B SB, S is In ^ "assign " ^ SA ^ " " ^ SB.
+show-stmt In (increment A B) S :- !, show-operand A SA, show-operand B SB, S is In ^ "increment " ^ SA ^ " " ^ SB.
+show-stmt In (push Tape E) S :- !, quote Tape Q, show-operand E SE, S is In ^ "push " ^ Q ^ " " ^ SE.
+show-stmt In (pop Tape E) S :- !, quote Tape Q, show-operand E SE, S is In ^ "pop " ^ Q ^ " " ^ SE.
+show-stmt In (return E) S :- !, show-operand E SE, S is In ^ "return " ^ SE.
+show-stmt In (branch C T E) S :- !,
+  show-operand C SC, show-block In T ST, show-block In E SE,
+  S is In ^ "branch " ^ SC ^ "\n" ^ ST ^ "\n" ^ SE.
+show-stmt In (loop I Lo Hi B) S :- !,
+  quote I QI, show-operand Lo SL, show-operand Hi SH, show-block In B SB,
+  S is In ^ "loop " ^ QI ^ " " ^ SL ^ " " ^ SH ^ "\n" ^ SB.
+show-stmt In (loop-back I Lo Hi B) S :-
+  quote I QI, show-operand Lo SL, show-operand Hi SH, show-block In B SB,
+  S is In ^ "loop-back " ^ QI ^ " " ^ SL ^ " " ^ SH ^ "\n" ^ SB.
+
+func show-function cfunction -> string.
+show-function (cfunction Ret Name Args Body) S :-
+  quote Ret QR, quote Name QN,
+  std.map Args quote QAs, std.string.concat ", " QAs SA,
+  show-block "" Body SB,
+  S is "cfunction " ^ QR ^ " " ^ QN ^ " [" ^ SA ^ "]\n" ^ SB.
+
+}

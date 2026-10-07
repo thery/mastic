@@ -1,0 +1,39 @@
+; copy of elpi/src/parser (branch mastic-systematic of thery/elpi), with error
+; nodes, error rules and the recovery strategy for Mastic
+(library
+ (name elpi_parser)
+ (preprocess (per_module ((pps ppx_deriving.std) ast)))
+ (libraries unix menhirLib elpi_lexer_config elpi_util stdlib-shims mastic)
+ (modules ast grammar lexer parser_config error_messages parse))
+
+(library
+ (name elpi_lexer_config)
+ (libraries elpi_util mastic)
+ (modules tokens lexer_config))
+
+(executable
+ (name gen_token_precedence)
+ (modules gen_token_precedence)
+ (libraries elpi_lexer_config))
+
+(executable
+ (name gen_infix_lexer)
+ (modules gen_infix_lexer)
+ (libraries elpi_lexer_config str))
+
+(menhir (modules tokens) (flags --table --inspection --only-tokens))
+(menhir (modules grammar tokens token_precedence) (flags --external-tokens Elpi_lexer_config.Tokens --table --inspection) (merge_into grammar))
+(ocamllex (modules lexer))
+
+(env (dev (flags (:standard -w -9 -w -27 -warn-error -A))))
+
+(rule
+ (action (with-stdout-to lexer.mll (run %{exe:gen_infix_lexer.exe} %{dep:lexer.mll.in}))))
+
+(rule
+ (action (with-stdout-to token_precedence.mly (run %{exe:gen_token_precedence.exe}))))
+
+(rule
+ (action (with-stdout-to error_messages.ml
+   (run menhir %{dep:tokens.mly} %{dep:grammar.mly} %{dep:token_precedence.mly}
+     --base grammar --compile-errors %{dep:error_messages.txt}))))

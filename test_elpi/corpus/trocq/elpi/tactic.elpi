@@ -1,0 +1,106 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                            %                     Trocq                      %
+%  _______                   %        Copyright (C) 2023 Inria & MERCE        %
+% |__   __|                  %     (Mitsubishi Electric R&D Centre Europe)    %
+%    | |_ __ ___   ___ __ _  %        Cyril Cohen <cyril.cohen@inria.fr>      %
+%    | | '__/ _ \ / __/ _` | %        Enzo Crance <enzo.crance@inria.fr>      %
+%    | | | | (_) | (_| (_| | %    Assia Mahboubi <assia.mahboubi@inria.fr>    %
+%    |_|_|  \___/ \___\__, | %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                        | | %   This file is distributed under the terms of  %
+%                        |_| %   GNU Lesser General Public License Version 3  %
+%                            % (see LICENSE file for the text of the license) %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+accumulate "Trocq.Elpi/param".
+
+:before "coq-assign-evar-raw"
+evar _ _ _ :- !.
+
+:before "coq-assign-evar-refined"
+evar _ _ _ :- !.
+
+pred known->gref i:prop, o:prop.
+known->gref
+  (trocq.db.known-gref _Rel GR OutCl Classes GR' GRR)
+  (trocq.db.gref GR OutCl Classes GR' GRR :- !).
+
+pred load-rel i:gref, o:list prop.
+load-rel GRRel DB :- std.do! [
+  std.findall
+    (trocq.db.known-gref GRRel _GR _OutCl _Classes _GR' _GRR)
+    AllRel,
+  std.map AllRel known->gref DB
+].
+
+pred load-rels i:list gref, o:list prop.
+load-rels GRRels DB :- std.do! [
+  std.map GRRels load-rel DBs,
+  std.flatten DBs DB
+].
+
+pred parse-goal i:goal, o:term, o: term, o:term, o:list gref.
+parse-goal Goal _ _ _ _ :- logging.info (coq.say "[solve] trying to solve goal" Goal), fail.
+% trocq to G with A B C.
+parse-goal Goal G Ty G' Rels :-
+  Goal = goal _Context _ G _ [(str "to"),RG',(str "with")|RRels], !,
+  std.assert-ok! (coq.typecheck G Ty) "goal ill-typed",
+  std.map RRels util.argument->gref Rels,
+  util.argument->term RG' G'.
+% trocq to G.
+parse-goal Goal G Ty G' [] :-
+  Goal = goal _Context _ G _ [(str "to"),RG'], !,
+  std.assert-ok! (coq.typecheck G Ty) "goal ill-typed",
+  util.argument->term RG' G'.
+% trocq with A B C.
+parse-goal Goal G Ty G' Rels :-
+  Goal = goal _Context _ G _ [(str "with")|RRels], !,
+  std.assert-ok! (coq.typecheck G Ty) "goal ill-typed",
+  std.map RRels util.argument->gref Rels.
+% trocq.
+parse-goal Goal G Ty _ [] :-
+  Goal = goal _Context _ G _ [], !,
+  logging.trace (coq.say "[parse-goal] No arguments"),
+  std.assert-ok! (coq.typecheck G Ty) "goal ill-typed".
+parse-goal Goal _ _ _ _ :- !,
+  coq.error "Wrong usage of trocq tactic",
+  fail.
+
+solve InitialGoal NewGoals :- std.do! [
+  parse-goal InitialGoal G Ty G' GRArgs,
+  logging.info (coq.say "[solve] loading rels" GRArgs),
+  load-rels GRArgs DB,
+  logging.info (coq.say "[solve] local DB" DB),
+  logging.info (coq.say "[solve] goal" {coq.term->string G}),
+  translate-goal DB Ty G (pc map0 map1) G' GR,
+  logging.info (
+    coq.say "[solve] trocq:" {coq.term->string G} "~" {coq.term->string G'}
+      "by" {coq.term->string GR}
+  ),
+  FinalProof = {{ @comap lp:G lp:G' lp:GR (_ : lp:G') }},
+  logging.info (coq.say "[solve] Final proof" {coq.term->string FinalProof}),
+
+  std.assert-ok! (coq.elaborate-skeleton FinalProof G EFinalProof) "proof elaboration error",
+  std.assert-ok! (coq.typecheck EFinalProof G2) "proof typechecking error",
+  std.assert-ok! (coq.unify-leq G2 G) "goal unification error",
+  refine.no_check EFinalProof InitialGoal NewGoals
+].
+
+pred translate-goal i:list prop, i:term, i:term, i:param-class, o:term, o:term.
+translate-goal DB Ty G C G' GR' :- DB => std.do! [
+  coq.reduction.lazy.norm Ty (sort S),
+  cstr.init,
+  T = asort S C,
+  logging.debug (coq.say "[translate-goal] will translate" G "at level" T),
+  term->aterm G AG,
+  % generate the associated goal G' and witness GR
+  param AG T G' GR,
+  logging.debug (coq.say "[translate-goal] after translation: goal" G' "with proof" GR),
+  % reduce the graph, so the variables all become ground in the terms
+  cstr.local-db DB,
+  (cstr.reduce-graph; trocq.error "Could not solve constraint Graph"),
+  logging.debug (coq.say "[translate-goal] Beta-reducing proof" GR),
+  %TODO make β-reduction directly in weaken predicate (Issue #63)
+  coq.reduction.lazy.bi-norm GR GR',
+  logging.debug (coq.say "[transalte-goal] After reductions: goal" {coq.term->string G'} "with proof" {coq.term->string GR'}),
+].
+

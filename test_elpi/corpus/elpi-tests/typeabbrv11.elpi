@@ -1,0 +1,6 @@
+typeabbrev x int.
+
+pred f x.
+f "x".
+
+main.

@@ -1,0 +1,148 @@
+% tangent.elpi — forward mode: the linearization, into the derivative IR.
+%
+% The tangent program computes every value together with its tangent, the
+% derivative along the tangents of the independent arguments. For
+% `let x = op F a b`, x_dot is the sum, over the varied operands, of the
+% partial derivative times the tangent of the operand. A value is always
+% computed before its tangent, so no tape is ever needed.
+
+shorten adjudge.{ written-role, with-arguments, of, type-of, varied, stored, with-storage, open-let, open-fold, open-index, spell, spell-partial, dot, scale, sum, sbind, partial1, partial2 }.
+
+typeabbrev tangent-code (scoped (pair (list dstmt) (pair dexpr dexpr))).   % statements, value and tangent of the tail atom
+
+namespace adjudge {
+
+% The generated signature: the arguments of the primal, then the tangent of
+% each argument that has one, then the tangent of a returned value.
+func tangent afunction ann -> dfunction.
+tangent (a-function Name Def) (dfunction TName Body) :-
+  TName is Name ^ "_tangent",
+  with-arguments Def tangent-body Body.
+
+func tangent-body list (pair decl dvar), aresult, anf ann -> scoped dbody.
+tangent-body Args Res B R :-
+  std.map Args tangent-primal Ps, std.map Args tangent-dot Dss, std.flatten Dss Ds,
+  tan B SB,
+  sbind SB (tangent-finish Ps Ds Res) R.
+
+func tangent-finish list dparam, list dparam, aresult, pair (list dstmt) (pair dexpr dexpr) -> scoped dbody.
+tangent-finish Ps Ds Res (pr S (pr V D)) (done (dbody Ret Params Stmts)) :-
+  tangent-result Res V D Ret Extra Tail,
+  std.flatten [Ps, Ds, Extra] Params, std.append S Tail Stmts.
+
+% Where the result goes: returned, with its tangent in an argument; stored in
+% the written real; an array is written in place, element by element.
+func tangent-result aresult, dexpr, dexpr -> dreturn, list dparam, list dstmt.
+tangent-result (a-returns _) V D d-returns-real [dparam by-ref real (dot-of result-var)]
+  [d-assign (d-var (dot-of result-var)) D, d-return V] :- !.
+tangent-result (a-writes Y) V D d-void [] [d-assign (d-var X) V, d-assign (d-var (dot-of X)) D] :-
+  of Y real, !, stored Y X.
+tangent-result _ _ _ d-void [] [].
+
+func tangent-primal pair decl dvar -> dparam.
+tangent-primal (pr (decl _ integer _) V) (dparam by-value integer V) :- !.
+tangent-primal (pr (decl _ T R) V) (dparam by-ref T V) :- written-role R, !.
+tangent-primal (pr (decl _ real _) V) (dparam by-value real V) :- !.
+tangent-primal (pr (decl _ T _) V) (dparam by-cref T V).
+
+func tangent-dot pair decl dvar -> list dparam.
+tangent-dot (pr (decl _ integer _) _) [] :- !.
+tangent-dot (pr (decl _ _ passive) _) [] :- !.
+tangent-dot (pr (decl _ real independent) V) [dparam by-value real (dot-of V)] :- !.
+tangent-dot (pr (decl _ T independent) V) [dparam by-cref T (dot-of V)] :- !.
+tangent-dot (pr (decl _ T _) V) [dparam by-ref T (dot-of V)].
+
+% tan T R: the statements computing T, with the value and the tangent of its tail atom.
+func tan anf ann -> tangent-code.
+tan (a-let (let-ann Vr _ _) E B) R :- !,
+  type-of E T,
+  with-storage E B (tan-let E B T Vr) R.
+tan (a-ret X) (done (pr [] (pr V D))) :- spell X V, dot X D.
+
+func tan-let value ann, (atom -> anf ann), ty, bool, dvar -> tangent-code.
+tan-let E B T Vr N R :-
+  tan-value E T Vr N SE,
+  open-let T N Vr (x\ tan (B x) SB),
+  sbind SE (tan-prepend SB) R.
+
+func tan-prepend tangent-code, list dstmt -> tangent-code.
+tan-prepend SB SE R :- sbind SB (tan-prepend-done SE) R.
+
+func tan-prepend-done list dstmt, pair (list dstmt) (pair dexpr dexpr) -> tangent-code.
+tan-prepend-done SE (pr SB VD) (done (pr S VD)) :- std.append SE SB S.
+
+% tan-value E T Vr N S: S computes the value E into N, and its tangent when E
+% is varied, as Vr says.
+func tan-value value ann, ty, bool, dvar -> code.
+tan-value (a-op1 F A) T Vr N (done S) :- !,
+  spell A EA, E = d-op1 F EA,
+  if (Vr = tt)
+     (partial1 F A P, tangent-term A P Terms, sum Terms DE,
+      S = [d-define (d-constant T) N E, d-define (d-constant real) (dot-of N) DE])
+     (S = [d-define (d-constant T) N E]).
+tan-value (a-op2 F A B) T Vr N (done S) :- !,
+  spell A EA, spell B EB, E = d-op2 F EA EB,
+  if (Vr = tt)
+     (partial2 F A B PA PB, tangent-term A PA TA, tangent-term B PB TB, std.append TA TB Terms,
+      sum Terms DE,
+      S = [d-define (d-constant T) N E, d-define (d-constant real) (dot-of N) DE])
+     (S = [d-define (d-constant T) N E]).
+tan-value (a-get A I) _ _ N (done S) :- !,
+  spell A EA, spell I EI,
+  if (varied A)
+     (dot A DA, S = [d-define (d-constant real) N (d-at EA EI), d-define (d-constant real) (dot-of N) (d-at DA EI)])
+     (S = [d-define (d-constant real) N (d-at EA EI)]).
+tan-value (a-set _ I V) _ Vr N (done S) :- !,
+  spell I EI, spell V EV,
+  if (Vr = tt)
+     (dot V DV, S = [d-assign (d-at (d-var N) EI) EV, d-assign (d-at (d-var (dot-of N)) EI) DV])
+     (S = [d-assign (d-at (d-var N) EI) EV]).
+tan-value (a-ite C Then Else) _ Vr N R :- !,
+  spell C EC, tan Then ST, tan Else SE,
+  sbind ST (tan-ite-then SE Vr EC N) R.
+tan-value (a-map Lo Hi B) _ Vr N (fresh "i" R) :- !,
+  spell Lo ELo, spell Hi EHi,
+  pi i\ open-index i (x\ tan (B x) (SB i)), sbind (SB i) (tan-map i ELo EHi Vr N) (R i).
+tan-value (a-fold (fold-ann SVr _ _) Lo Hi Init B) real _ N (fresh "i" R) :- !,
+  spell Lo ELo, spell Hi EHi, spell Init EI,
+  if (SVr = tt) (dot Init DI) (DI = d-real "0"),
+  pi i\ open-fold SVr real N i (x\ s\ tan (B x s) (SB i)), sbind (SB i) (tan-fold i ELo EHi EI DI SVr N) (R i).
+tan-value (a-fold (fold-ann SVr _ _) Lo Hi _ B) (array K) _ N (fresh "i" R) :-
+  spell Lo ELo, spell Hi EHi,
+  pi i\ open-fold SVr (array K) N i (x\ s\ tan (B x s) (SB i)), sbind (SB i) (tan-fold-array i ELo EHi) (R i).
+
+func tan-ite-then tangent-code, bool, dexpr, dvar, pair (list dstmt) (pair dexpr dexpr) -> code.
+tan-ite-then SE Vr EC N BT R :- sbind SE (tan-ite Vr EC N BT) R.
+
+func tan-ite bool, dexpr, dvar, pair (list dstmt) (pair dexpr dexpr), pair (list dstmt) (pair dexpr dexpr) -> code.
+tan-ite tt EC N (pr ST (pr VT DT)) (pr SE (pr VE DE))
+  (done [d-real-var N, d-real-var (dot-of N), d-branch EC BT BE]) :- !,
+  std.append ST [d-assign (d-var N) VT, d-assign (d-var (dot-of N)) DT] BT,
+  std.append SE [d-assign (d-var N) VE, d-assign (d-var (dot-of N)) DE] BE.
+tan-ite ff EC N (pr ST (pr VT _)) (pr SE (pr VE _)) (done [d-real-var N, d-branch EC BT BE]) :-
+  std.append ST [d-assign (d-var N) VT] BT,
+  std.append SE [d-assign (d-var N) VE] BE.
+
+func tan-map dvar, dexpr, dexpr, bool, dvar, pair (list dstmt) (pair dexpr dexpr) -> code.
+tan-map I ELo EHi Vr N (pr SB (pr VB DB)) (done [d-for I ELo EHi Body]) :-
+  if (Vr = tt)
+     (std.append SB [d-assign (d-at (d-var N) (d-var I)) VB, d-assign (d-at (d-var (dot-of N)) (d-var I)) DB] Body)
+     (std.append SB [d-assign (d-at (d-var N) (d-var I)) VB, d-assign (d-at (d-var (dot-of N)) (d-var I)) (d-real "0")] Body).
+
+func tan-fold dvar, dexpr, dexpr, dexpr, dexpr, bool, dvar, pair (list dstmt) (pair dexpr dexpr) -> code.
+tan-fold I ELo EHi EI DI Vr N (pr SB (pr VB DB)) (done S) :-
+  if (Vr = tt)
+     (std.append SB [d-assign (d-var N) VB, d-assign (d-var (dot-of N)) DB] Body,
+      S = [d-define d-mutable N EI, d-define d-mutable (dot-of N) DI, d-for I ELo EHi Body])
+     (std.append SB [d-assign (d-var N) VB] Body,
+      S = [d-define d-mutable N EI, d-for I ELo EHi Body]).
+
+func tan-fold-array dvar, dexpr, dexpr, pair (list dstmt) (pair dexpr dexpr) -> code.
+tan-fold-array I ELo EHi (pr SB _) (done [d-for I ELo EHi SB]).
+
+% tangent-term A P Ts: the partial derivative P times the tangent of the operand A, when A is varied.
+func tangent-term atom, pexpr -> list dexpr.
+tangent-term A P [E] :- varied A, !, spell-partial P EP, dot A DA, scale EP DA E.
+tangent-term _ _ [].
+
+}

@@ -1,0 +1,42 @@
+/* core of discriminate                                                      */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+shorten std.{ do! }.
+
+namespace ltac {
+
+% Tests if the command can be applied
+func discriminate? term, inductive -> list term, constructor, term, term.
+discriminate? Ty GR Args GRA A B :- do! [
+  whd Ty [] {{lib:@elpi.eq}} [T,A,B],
+  whd T [] IT Args,
+  whd A [] KA _,
+  whd B [] KB _,
+  coq.env.global (indt GR) IT,
+  coq.env.global (indc GRA) KA,
+  coq.env.global (indc GRB) KB,
+  not(GRA = GRB)
+].
+
+% Does the job
+:index (1)
+func discriminate! term, term, inductive, list term, constructor, term, term -> term.
+discriminate! H G GR Args GRA A B PG :- do! [
+  isK-db GRA IsKA,
+  coq.env.global (indt GR) Ind,
+  coq.mk-app IsKA Args IsKAArgs,
+  coq.mk-app Ind Args IndT,
+  coq.mk-app {{lib:elpi.derive.eq_f}} [IndT, {{lib:elpi.bool}},IsKAArgs,A,B,H] Eq_isKA_isKB,
+  coq.mk-app {{lib:elpi.bool_discr}} [Eq_isKA_isKB, G] PG
+].
+
+func discriminate term, term, term -> term.
+discriminate H EqAB G PG :-
+  if (discriminate? EqAB    GR Args GRA A B)
+     (discriminate! H G      GR Args GRA A B PG)
+  (coq.error "discriminate: the equation" {coq.term->string H} "of type" {coq.term->string EqAB} "is trivial at the top level").
+
+}
+
+% vim:set ft=lprolog spelllang=:

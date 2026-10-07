@@ -1,0 +1,12 @@
+pred c.
+
+:name "c"
+c :- !, fail.
+
+:before "c"
+c :- true.
+
+:before "c"
+c :- !, fail, fail.
+
+main :- c.

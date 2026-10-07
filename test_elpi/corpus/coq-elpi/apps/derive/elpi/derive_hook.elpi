@@ -1,0 +1,12 @@
+/* Entry point for derive extensions                                         */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+pred derivation gref, string -> bool, derive.
+pred export modpath.
+pred dep1 -> string, string.
+data derive.
+symb derive : string -> (func -> list (pred)) -> prop -> derive.
+
+% if a derivation fails it should end by calling stop, instead of coq.error,
+% so that derive can make the failure non fatal

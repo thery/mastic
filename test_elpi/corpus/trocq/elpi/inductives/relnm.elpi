@@ -1,0 +1,91 @@
+accumulate "Trocq.Elpi.inductives/common_algo".
+accumulate "Trocq.Elpi.inductives/utils".
+
+shorten derive.algo-utils.{type-of-args, whd-fuel, iota-step, invert-eqs, rewrite-with}.
+shorten derive.common-algo.{mk-mR-type-relnm,sym-tyargs}.
+
+namespace derive.relnm {
+
+pred refine-covariant-tyargs i: list term, i:term, i:list term, o: list term.
+refine-covariant-tyargs [] _ L L.
+refine-covariant-tyargs [A1, A2, AR | L2] Refiner Acc R :-
+  coq.mk-app Refiner [A1,A2,AR] Refined,
+  std.append Acc [A1, A2, AR, Refined] NewAcc,
+  refine-covariant-tyargs L2 Refiner NewAcc R.
+
+pred refine-Lsym i: list term, i:list term, i:term, i:list term, o: list term.
+refine-Lsym [] [] _ L L.
+refine-Lsym [A1, A2, AR | L2] [_,_,_,Refined | L2Ref] Refiner Acc R :-
+  coq.safe-dest-app Refined _ Lref,
+  coq.mk-app Refiner Lref RefinedContra,
+  std.append Acc [A1, A2, AR, RefinedContra] NewAcc,
+  refine-Lsym L2 L2Ref Refiner NewAcc R.
+
+% TyargNo, relnm Type, mapnCov, mapmContra, eq_map, rsymK, list of args
+pred implement-relnm i:int, i:term, i:term, i:term, i:term, i:term, i:term, i:term, i:term, i:list term, o:term.
+implement-relnm 0 _
+  MapNCov MapMContra Eq_map RsymK CovariantNN ContravariantNN BuildNN LRev R :-
+  !,
+  std.rev LRev L,
+  refine-covariant-tyargs L CovariantNN [] LCo,
+  sym-tyargs L LSym,
+  refine-Lsym LSym LCo ContravariantNN [] LContra,
+  coq.mk-app MapNCov LCo MapCovariant,
+  coq.mk-app MapMContra LContra MapContravariant,
+  coq.mk-app RsymK LSym RsymKSym,
+  R = {{ lp:BuildNN _ _ _ lp:MapCovariant (lp:Eq_map lp:RsymKSym lp:MapContravariant )}}.
+implement-relnm N (prod AN1 ATy1 a1\ prod AN2 ATy2 a2\ prod ARN (ARTy a1 a2) ar\ (Bo a1 a2 ar))
+  MapNCov MapMContra Eq_map RsymK CovariantNN ContravariantNN BuildNN L
+  (fun AN1 ATy1 a1\ fun AN2 ATy2 a2\ fun ARN (ARTy a1 a2) ar\ (R a1 a2 ar)) :-
+  M is N - 1,
+  @pi-decl AN1 ATy1 a1\ %A1 : Type
+  @pi-decl AN2 ATy2 a2\ %A2 : Type
+  @pi-decl ARN (ARTy a1 a2) ar\ % AR : ParamNM.Rel A1 A2
+    sigma NewL\
+      std.append [ar,a2,a1] L NewL,
+      implement-relnm M (Bo a1 a2 ar) MapNCov MapMContra Eq_map RsymK CovariantNN ContravariantNN BuildNN NewL (R a1 a2 ar).
+
+pred get-eq-map i:map-class, o:term.
+get-eq-map map0  {{ lib:trocq.eq_map0 }}.
+get-eq-map map1  {{ lib:trocq.eq_map1 }}.
+get-eq-map map2a {{ lib:trocq.eq_map2a }}.
+get-eq-map map2b {{ lib:trocq.eq_map2b }}.
+get-eq-map map3  {{ lib:trocq.eq_map3 }}.
+get-eq-map map4  {{ lib:trocq.eq_map4 }}.
+
+pred generate-relNM i:inductive, i:param-class, o: term, o: term.
+generate-relNM GR (pc N M as PC) ReTy Re :-
+  coq.env.indt GR _ TyParamNo _ _ _ _,
+  coq.env.global (indt GR) Ind,
+  std.assert! (param Ind Ind TR) "derive.relNM: use derive.param2 before",
+  coq.typecheck TR TRTy ok,
+  trocq.db.rel PC PRelNM BuildNM _ CovNM ContraNM,
+  mk-mR-type-relnm TyParamNo TRTy TR (pglobal PRelNM _) RTy,
+  std.assert-ok! (coq.elaborate-skeleton RTy _ ReTy) "derive.relNM generates illtyped type",
+  std.assert! (trocq.db.map-ind Ind N UmapNCov) "derive.relNM: use derive.umap before",
+  std.assert! (trocq.db.map-ind Ind M UmapMContra) "derive.relNM: use derive.umap before",
+  std.assert! (rsymK-db Ind RSymKInd) "derive.relNM: use derive.rsymK before",
+  get-eq-map M Eq_map,
+  implement-relnm TyParamNo ReTy UmapNCov UmapMContra Eq_map RSymKInd (pglobal CovNM _) (pglobal ContraNM _) (pglobal BuildNM _) [] R,
+  std.assert-ok! (coq.elaborate-skeleton R ReTy Re) "derive.relNM generates illtyped term".
+
+func main inductive, string -> list prop.
+main GR Prefix Clauses :- std.do! [
+  coq.env.global (indt GR) I,
+  std.fold {param-class.all-of-kind all} []
+  (PC\ Cls\ Cls'\
+    sigma N M C ReTy Re Name FName\
+    (pc N M) = PC,
+    generate-relNM GR PC ReTy Re,
+    Name is Prefix ^ "rel" ^ {map-class.to_string N} ^ {map-class.to_string M},
+    coq.ensure-fresh-global-id Name FName,
+    coq.env.add-const FName Re ReTy _ C,
+    Cls' = [trocq.db.param-ind I PC (global (const C))| Cls])
+    RCls,
+  Clauses = [trocq.db.param-ind-done GR | RCls],
+  std.forall Clauses (x\
+    coq.elpi.accumulate _ "trocq.db" (clause _ _ x)
+  ),
+].
+
+}

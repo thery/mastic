@@ -1,0 +1,187 @@
+/* Boolean comparison functions                                             */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+shorten std.{assert!, do!, append}.
+
+namespace derive.eq {
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Fills in the matrix with the truth values
+:index (_ 1 1)
+func body
+ term, list term, list term, % constructor, arguments and their types
+ term, list term, list term  % constructor, arguments and their types
+ -> term. %result
+
+:name "derive.eq.body:begin" % Extension point (e.g. to skip a subterm)
+body K [] _ K [] _ R :- !, % no arguments, same constructor
+  R = {{ true }}.
+
+body K [X] [T1] K [Y] [T2] R :- !, % special case to avoid ".. && true"
+  eq-db T1 T2 F, coq.mk-app F [X,Y] R.
+
+body K [X|XS] [T1|TS1] K [Y|YS] [T2|TS2] R :- !,
+  % compare X with Y
+  eq-db T1 T2 F, coq.mk-app F [X,Y] RX,
+  % compare XS with YS
+  body K XS TS1 K YS TS2 RXS,
+  R = {{ (lp:RX && lp:RXS)%bool }}.
+
+body _ _ _ _ _ _ R :- !, % outside the diagonal it is always false
+  R = {{ false }}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Build the body
+
+:index (_ _ 1)
+func bo-idx
+ prop, % eq-db clause for the current type (applied to params)
+ term, % inductive type (applied to params) for the first argument
+ term, % arity left for the first argument
+ term, % inductive type (applied to params) for the second argument
+ term, % arity left for the second argument
+ int   % accumulator to set Recno
+ -> int,  % Recno
+ term,    % Type of the term being built
+ term.    % Term buing built
+
+bo-idx C Ity1 (prod _ Src1 Tgt1) Ity2 (prod _ Src2 Tgt2) N M Rty R :- !,
+  coq.name-suffix `i` 1 I1,
+  coq.name-suffix `i` 2 I2,
+  R = (fun I1 Src1 i\ fun I2 Src2 j\ Rrec i j),
+  Rty = (prod I1 Src1 i\ prod I2 Src2 j\ Rtyrec i j),
+  quantify-eq-db-idx C Crec,
+  pi x y\
+   decl x `i` Src1 =>
+   decl y `j` Src2 =>
+   bo-idx Crec {coq.mk-app Ity1 [x]} (Tgt1 x) {coq.mk-app Ity2 [y]} (Tgt2 y) 
+     {calc (N + 2)} M (Rtyrec x y) (Rrec x y).
+  
+bo-idx C Ity1 (sort _) Ity2 (sort _) N N Rty R :- !,
+  Rty = {{ lp:Ity1 -> lp:Ity2 -> bool }},
+  R = {{ fun (x1 : lp:Ity1) (x2 : lp:Ity2) => lp:(Bo x1 x2) }},
+  pi x1 x2\
+   decl x1 `a` Ity1 =>
+   decl x2 `b` Ity2 =>
+   C =>
+     bo-matrix x1 Ity1 x2 Ity2 (Bo x1 x2).
+
+bo-idx C Ity1 X Ity2 Y N M Rty R :- whd1 X X1, whd1 Y Y1, !,
+  bo-idx C Ity1 X1 Ity2 Y1 N M Rty R.
+
+func bo-matrix term, term, term, term -> term.
+bo-matrix X1 TyX1 X2 TyX2 R :-
+    coq.build-match X1 TyX1 bo-ty (k1\ _\ a1\ ty1\
+    coq.build-match X2 TyX2 bo-ty (k2\ _\ a2\ ty2\
+      body k1 a1 ty1 k2 a2 ty2)) R.
+
+func bo-ty term, list term, list term -> term.
+bo-ty _ _ _ {{ bool }}.
+ 
+% Take in input all parameters and their comparison function %%%%%%%%%%%%%%
+func bo-param
+ int,  % Number of parameters, recursion fuel
+ term, % Inductive type (applied to all parameters taken in input)
+ term % Inductive type arity (parameters + indexes)
+ -> term. % Comparison function
+
+bo-param 0 Ity Arity R :- coq.safe-dest-app Ity (global (indt GR)) _, coq.env.recursive? GR, !,
+  Boidx = fix `f` Recno Rty Rbo,
+  (pi f\ decl f `f` Rty =>
+    % We build the body (assuming the indexes are *not* the same)
+    bo-idx (eq-db Ity Ity f :- []) Ity Arity Ity Arity 0 Recno Rty (Rbo f)),
+  % We then pass to the body the terms with their indexes (that are the same)
+  apply-idx Ity Arity Boidx R.
+bo-param 0 Ity Arity R :- !,
+  bo-idx (pi f\eq-db Ity Ity f :- fail) Ity Arity Ity Arity 0 _ _ Boidx,
+  apply-idx Ity Arity Boidx R.
+
+bo-param N Ity (prod _ Sty Rty) R :- !, M is N - 1,
+  R = {{ fun (A : lp:Sty) (eqA : A -> A -> bool) => lp:(Bo A eqA) }},
+  pi a f\ sigma ItyA\
+    coq.mk-app Ity [a] ItyA, 
+    (eq-db a a f :- !) =>
+    decl a `a` Sty =>
+    decl f `f` {{ lp:a -> lp:a -> bool }} =>
+      bo-param M ItyA (Rty a) (Bo a f).
+
+bo-param N Ity X R :- whd1 X X1, !,
+  bo-param N Ity X1 R.
+
+func apply-idx
+  term, % Ity applied to parameters
+  term, % Arity remaining after parameters
+  term % Bo comparison with potentially different indexes as per bo-idx
+  -> term. % fun idx1 idx2 (x1 : Ity ixd1) (x2 : Ity idx2) => Bo idx1 x1 idx2 x2
+apply-idx _ (sort _) Bo Bo :- !. % no indexes -> avoid eta expansion of Bo
+apply-idx Ity Arity Bo R :-
+  apply-idx.aux Ity Arity Bo R.
+apply-idx.aux Ity (prod N S T) Bo (fun N S x\ R x) :- !,
+  pi x\ apply-idx.aux {coq.mk-app Ity [x]} (T x) {coq.mk-app Bo [x,x]} (R x).
+apply-idx.aux Ity (sort _) Bo (fun `x1` Ity x1\ fun `x2` Ity x2\ Bo1 x1 x2) :- !,
+  pi x1 x2\ coq.mk-app Bo [x1,x2] (Bo1 x1 x2).
+
+func apply-idx.aux term, term, term -> term.
+apply-idx.aux Ity X Bo R :- whd1 X X1, !,
+  apply-idx.aux Ity X1 Bo R.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Builds a clause for eq-db that fits the inductive arity:
+% - a premise per type parameter
+% - a simple argument for each index
+
+% Also used to load the context under the fix 
+:index (1)
+func quantify-eq-db-idx (pred) -> (pred).
+quantify-eq-db-idx (pi x y\ C x y) (pi x y\ C1 x y) :-
+  pi x y\ quantify-eq-db-idx (C x y) (C1 x y).
+quantify-eq-db-idx (eq-db A B C :- L)
+                         (pi x y\ eq-db (A1 x) (B1 y) (C1 x y) :- L) :-
+  pi x y\ coq.mk-app A [x] (A1 x), coq.mk-app B [y] (B1 y), coq.mk-app C [x,y] (C1 x y).
+
+func quantify-eq-db-param (pred) -> (pred).
+quantify-eq-db-param (pi x f\ C x f) (pi x f\ C1 x f) :-
+  pi x f\ quantify-eq-db-param (C x f) (C1 x f).
+quantify-eq-db-param (eq-db A B C :- (L : list prop))
+                         (pi x f\ eq-db (A1 x) (B1 x) (C1 x f) :- (L1 x f : list prop)) :-
+  pi x f\
+    append [eq-db x x f] L (L1 x f),
+    coq.mk-app A [x] (A1 x),
+    coq.mk-app B [x] (B1 x),
+    coq.mk-app C [x,f] (C1 x f).
+
+func mk-clause int, term, (pred) -> (pred).
+mk-clause Lno (prod _ _ Tx) C R :- Lno > 0, !,
+  Lno1 is Lno - 1,
+  quantify-eq-db-param C C1,
+  pi x\ mk-clause Lno1 (Tx x) C1 R.
+mk-clause 0 (prod _ _ Tx) C R :- !,
+  quantify-eq-db-idx C C1,
+  pi x\ mk-clause 0 (Tx x) C1 R.
+mk-clause 0 (sort _) C C :- !.
+mk-clause N T A B :- whd1 T T1, !, mk-clause N T1 A B.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+func main inductive, string -> list (pred).
+main GR Name [Clause1, Clause2] :- do! [
+  coq.env.indt GR Ind Lno Luno Arity _ _,
+  assert! (Ind = tt)   "derive.eq: Coinductive types are not supported",
+  assert! (Lno = Luno) "derive.eq: Non-uniform parameters not supported",
+
+  % we build the comparison function
+  bo-param Lno (global (indt GR)) Arity RSkel,
+  std.assert-ok! (coq.elaborate-skeleton RSkel RT R) "derive.eq generates illtyped term",
+  coq.env.add-const Name R RT _ Cmp,
+
+  % we register it as a clause
+  mk-clause Lno Arity (eq-db (global (indt GR)) (global (indt GR)) (global (const Cmp)) :- [!]) Clause1,
+  coq.elpi.accumulate _ "derive.eq.db" (clause _ (before "eq-db:fail") Clause1),
+  Clause2 = eq-for GR Cmp,
+  coq.elpi.accumulate _ "derive.eq.db" (clause _ _ Clause2),
+].
+
+}
+
+% vim: set spelllang=:

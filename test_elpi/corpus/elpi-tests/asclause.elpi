@@ -1,0 +1,12 @@
+
+data tm.
+symb lam (tm -> tm) -> tm.
+
+pred hard tm.
+hard (lam x\ _ as P) :- print P.
+
+pred simple int.
+simple (1 as P) :- print P.
+
+main :-
+  simple 1, hard (lam x\ x).

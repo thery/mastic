@@ -1,0 +1,6 @@
+pred test1.
+pred test2.
+main :- test1, test2.
+
+test1 :- true & true & true.
+test2 :- X = [true & true, false], std.length X 2.

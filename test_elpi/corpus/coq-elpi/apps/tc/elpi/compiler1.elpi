@@ -1,0 +1,132 @@
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+namespace tc {
+  % returns the classes on which the current gref depends
+  func get-class-dependencies gref -> list gref.
+  get-class-dependencies GR Res :-
+    coq.env.dependencies GR _ DepSet,
+    coq.gref.set.elements DepSet DepList,
+    std.filter DepList coq.TC.class? Res.
+
+  func has-context-deps gref -> .
+  has-context-deps GR :-
+    coq.env.section-variables SectionVars,
+    coq.env.dependencies GR _ Deps, 
+    std.exists! SectionVars (x\ coq.gref.set.mem (const x) Deps).
+
+  func get-locality string -> list (pred).
+  get-locality "Local" [@local!] :- !.
+  get-locality _ [@local!] :- coq.env.current-section-path [_ | _], !.
+  get-locality "Global" [@global!].
+  get-locality "Export" [].
+
+  func add-inst.aux gref, gref, list (pred), grafting ->.
+  add-inst.aux Inst TC Locality Grafting :-
+    coq.env.current-section-path SectionPath,
+    tc.compile.instance-gr Inst Clause, 
+    tc.get-full-path Inst ClauseName, !,
+    (Locality => (
+      tc.add-tc-db ClauseName Grafting Clause, 
+      tc.add-tc-db _ Grafting (tc.instance SectionPath Inst TC Locality))).
+  add-inst.aux Inst _ _ _ :- 
+    (@global! => tc.add-tc-db _ _ (tc.banned Inst)),
+    coq.error "Not-added" "TC_solver" "[TC] Not yet able to compile" Inst "...".
+
+  func add-inst gref, gref, string, int ->.
+  add-inst Inst TC LocalityStr Prio :-
+    get-locality LocalityStr Locality,
+    if (Prio = -1) (tc.get-inst-prio Inst Prio1) (Prio1 = Prio),
+    Grafting is after (int_to_string Prio1),
+    add-inst.aux Inst TC Locality Grafting.
+
+  func is-local.
+  is-local :- std.mem! {attributes} (attribute "local" _).
+
+  func add-inst>db.aux gref ->.
+  add-inst>db.aux Inst :-
+    tc.get-inst-prio Inst Prio,
+    tc.get-TC-of-inst-type {coq.env.typeof Inst} TC,
+    % Note: this is an approximation of instance locality when added with 
+    %       TC.AddAllInstances or TC.AddInstances InstName
+    if (is-local; has-context-deps Inst) 
+      (LocalityStr = "Local") 
+      (LocalityStr = "Export"),
+    add-inst Inst TC LocalityStr Prio.
+
+  % [add-inst->db IgnoreClassDepL ForceAdd Inst] compiles and add the Inst to
+  % the database if the instance is not tc.banned or if it does not depend on a TC
+  % inside the list IgnoreClassDepL.
+  func add-inst->db list gref, bool, gref.
+  add-inst->db _ tt Inst :- !, add-inst>db.aux Inst.
+  add-inst->db _ _ Inst :- 
+    tc.banned Inst, !, (coq.warning "tc.banned-inst" "TC-warning" Inst "is tc.banned").
+  add-inst->db _ _ Inst :- tc.instance _ Inst _ _, !. % the instance has already been added
+  add-inst->db IgnoreClassDepL _ Inst :-
+    get-class-dependencies Inst Dep,
+    std.exists Dep (std.mem IgnoreClassDepL), !,
+    coq.warning "invalid-dependency-inst" "TC-warning" Inst "depneds on a tc.banned TC".
+  add-inst->db _ _ Inst :- !, add-inst>db.aux Inst.
+
+  % add all the instances of a TC
+  func add-inst-of-tc list gref, list gref, gref ->.
+  add-inst-of-tc IgnoreDepClassGR IgnoreInstsGR GR:-
+    tc.get-inst-by-tc-name GR InstL,
+    std.filter InstL (x\ not (std.mem IgnoreInstsGR x)) InstLF,
+    std.forall InstLF (add-inst->db IgnoreDepClassGR ff).
+
+  func add-tc-or-inst-gr list string, list string, list gref ->.
+  add-tc-or-inst-gr IgnoreDepClass IgnoreInsts Names :-
+    std.map IgnoreDepClass coq.locate IgnoreDepClassGR,
+    std.map IgnoreInsts coq.locate IgnoreInstsGR,
+    std.forall Names (GR\
+      if2 (coq.TC.class? GR)(add-inst-of-tc IgnoreDepClassGR IgnoreInstsGR GR)
+          (tc.is-instance-gr GR)(add-inst->db IgnoreDepClassGR ff GR)
+          (coq.warning "not-inst-nor-tc" "TC-warning" GR "is neither a TC nor a instance")
+    ).
+
+  func build-args term -> list term.
+  build-args (prod _ _ Bo) [{{0}} | TL] :- !, build-args (Bo _) TL.
+  build-args _ [{{0}}].
+
+  % [remove-inst GR] remove an instance from the DB
+  func remove-inst gref ->.
+  remove-inst InstGR :- 
+    tc.get-full-path InstGR ClauseName,
+    std.once(tc.instance _ InstGR ClassGR Locality),
+    tc.gref->pred-name ClassGR PredName,
+    coq.env.typeof ClassGR ClassTy,
+    coq.elpi.predicate PredName {build-args ClassTy} Clause,
+    tc.remove-clause ClauseName Clause Locality.
+
+  func is-in-path string, gref ->. 
+  is-in-path Path GR :- 
+    std.mem! {coq.gref->path GR} Path.
+
+  % [add-path ClassName Path] adds only the instances from a given path name
+  func add-path string, string ->.
+  add-path ClassName Path :-
+    coq.locate ClassName GR,
+    std.filter {tc.get-inst-by-tc-name GR} (is-in-path Path) InstInPath,
+    std.forall InstInPath (add-inst->db [] ff).
+
+  namespace class-coercion {
+    data task.
+    symb add : task.
+    symb remove : task.
+
+    func do-task task, gref ->.
+    do-task add GR :- add-inst->db [] tt GR.
+    do-task remove GR :- remove-inst GR.
+
+    :index (_ 1)
+    func loop-proj task, list argument ->.
+    loop-proj _ [].
+    loop-proj Task [str Proj | TL] :- 
+      coq.locate Proj GRProj, tc.existing-instance GRProj, !,
+      do-task Task GRProj,
+      loop-proj Task TL.
+    loop-proj Task [_|TL] :- loop-proj Task TL.
+    
+  }
+}

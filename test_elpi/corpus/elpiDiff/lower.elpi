@@ -1,0 +1,81 @@
+% lower.elpi — from the derivative IR (L2) to the target language (L3).
+%
+% The only pass that names variables and chooses C++ types. A variable bound by
+% `named` keeps its name; one bound by `fresh` gets its prefix and a number,
+% unique in the file. A tangent, an adjoint and a tape are named after their
+% variable: x_dot, x_bar, x_tape. Operations are spelled from their table, so
+% that the generated code instantiates with dual numbers as well as with double.
+
+shorten adjudge.{ operation1, operation2, extra-arguments }.
+
+namespace adjudge {
+
+func dname dvar -> string.                         % the name of a bound variable, set when its binder is opened
+
+func new-name string -> string.
+new-name Prefix Name :- new_int K, Name is Prefix ^ int_to_string K.
+
+func lower dfunction -> cfunction.
+lower (dfunction Name S) C :- lower-scoped Name S C.
+
+func lower-scoped string, scoped dbody -> cfunction.
+lower-scoped Name (named N F) C :- !, pi v\ dname v N =!=> lower-scoped Name (F v) C.
+lower-scoped Name (fresh P F) C :- !, new-name P N, pi v\ dname v N =!=> lower-scoped Name (F v) C.
+lower-scoped Name (done (dbody R Ps Ss)) (cfunction RS Name Args Stmts) :-
+  return-type R RS, std.map Ps param-string Args, std.map Ss lower-stmt Stmts.
+
+func var-name dvar -> string.
+var-name (dot-of V) S :- !, var-name V N, S is N ^ "_dot".
+var-name (bar-of V) S :- !, var-name V N, S is N ^ "_bar".
+var-name (tape-of V) S :- !, var-name V N, S is N ^ "_tape".
+var-name result-var "result" :- !.
+var-name V S :- dname V S.
+
+func return-type dreturn -> string.
+return-type d-returns-real "T".
+return-type d-void "void".
+
+func array-type int -> string.
+array-type K S :- S is "std::array<T, " ^ int_to_string K ^ ">".
+
+func value-type ty -> string.
+value-type real "const T" :- !.
+value-type _ "const auto".
+
+func param-string dparam -> string.
+param-string (dparam _ integer V) S :- !, var-name V N, S is "int " ^ N.
+param-string (dparam P real V) S :- !, var-name V N, pass-string P "T" N S.
+param-string (dparam P (array K) V) S :- var-name V N, array-type K A, pass-string P A N S.
+
+func pass-string dpass, string, string -> string.
+pass-string by-value      T N S :- S is T ^ " " ^ N.
+pass-string by-ref        T N S :- S is T ^ "& " ^ N.
+pass-string by-cref       T N S :- S is "const " ^ T ^ "& " ^ N.
+pass-string by-ref-unused T N S :- S is T ^ "& /*" ^ N ^ "*/".
+
+func lower-expr dexpr -> expr.
+lower-expr (d-var V) (id N) :- var-name V N.
+lower-expr (d-real S) (lit L) :- L is "T(" ^ S ^ ")".
+lower-expr (d-int K) (lit S) :- S is int_to_string K.
+lower-expr (d-at A I) (at EA EI) :- lower-expr A EA, lower-expr I EI.
+lower-expr (d-op1 F A) (call S [EA | Extras]) :-
+  operation1 F _ _ S, lower-expr A EA, extra-arguments F Xs, std.map Xs (x\ e\ e = lit x) Extras.
+lower-expr (d-op2 F A B) (call S [EA, EB]) :- operation2 F _ _ _ S, lower-expr A EA, lower-expr B EB.
+
+func lower-stmt dstmt -> stmt.
+lower-stmt (d-define (d-constant T) V E) (declare VT N E1) :- value-type T VT, var-name V N, lower-expr E E1.
+lower-stmt (d-define d-mutable V E) (declare "T" N E1) :- var-name V N, lower-expr E E1.
+lower-stmt (d-real-var V) (allocate "T" N) :- var-name V N.
+lower-stmt (d-tape V) (allocate "std::vector<T>" N) :- var-name V N.
+lower-stmt (d-assign A B) (assign A1 B1) :- lower-expr A A1, lower-expr B B1.
+lower-stmt (d-increment A B) (increment A1 B1) :- lower-expr A A1, lower-expr B B1.
+lower-stmt (d-branch C T E) (branch C1 T1 E1) :- lower-expr C C1, std.map T lower-stmt T1, std.map E lower-stmt E1.
+lower-stmt (d-for I Lo Hi B) (loop N Lo1 Hi1 B1) :-
+  var-name I N, lower-expr Lo Lo1, lower-expr Hi Hi1, std.map B lower-stmt B1.
+lower-stmt (d-for-back I Lo Hi B) (loop-back N Lo1 Hi1 B1) :-
+  var-name I N, lower-expr Lo Lo1, lower-expr Hi Hi1, std.map B lower-stmt B1.
+lower-stmt (d-push T E) (push N E1) :- var-name T N, lower-expr E E1.
+lower-stmt (d-pop T E) (pop N E1) :- var-name T N, lower-expr E E1.
+lower-stmt (d-return E) (return E1) :- lower-expr E E1.
+
+}

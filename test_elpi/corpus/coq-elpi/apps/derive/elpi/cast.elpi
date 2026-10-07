@@ -1,0 +1,76 @@
+/* Type cast using an equation                                               */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+shorten std.{append, rev, any->string, last, take}.
+
+namespace derive.cast {
+
+namespace aux {
+
+:index (1)
+func arity list term, list term -> term.
+arity [] _ (sort (typ U)) :- coq.univ.new U.
+arity [V|VS] Acc (prod `x` T R) :-
+  coq.mk-app V {rev Acc} T,
+  @pi-decl `x` T x\ arity VS [x|Acc] (R x).
+
+:index (1)
+func args list term, list term -> term.
+args [] [X|_] X.
+args [V|VS] Acc (fun `c` S R) :-
+  coq.mk-app V {rev Acc} S,
+  @pi-decl `x` S c\ args VS [c|Acc] (R c).
+
+func arg int, term, term, term, list term, list term, list term -> list term.
+arg _ _ _ _ _ [] _ [].
+arg I E X Y Ps [V|VS] Acc [R|RS] :-
+  cast-db I T,
+  take {calc (I )} Ps PsI,
+  coq.mk-app T {append {append PsI [X,Y,E]} {append {rev Acc} [V]}} R,
+  J is I + 1,
+  arg J E X Y Ps VS [V|Acc] RS.
+
+:index(_ _ _ _ 1)
+func args-ty term, term, term, list term, list term, list term -> term.
+args-ty E X Y Ps [] [_|Acc] R :-
+  last Ps V,
+  rev Acc [_|Vars],
+  arg 2 E X Y Ps Vars [] CastedVars,
+  coq.mk-app V [X|CastedVars] R.
+args-ty E X Y Ps [V|VS] Acc (prod `c` S R) :-
+  coq.mk-app V {rev Acc} S,
+  @pi-decl `c` S c\ args-ty E X Y Ps VS [c|Acc] (R c).
+
+func body int, int, list term -> term.
+body I J V (fun Name T R) :- I > 0, !,
+  coq.name-suffix `A` {calc (J - I)} Name,
+  I1 is I - 1,
+  arity {rev V} [] T,
+  @pi-decl Name T x\ body I1 J [x|V] (R x).
+body 0 _ V R :-
+  rev V [A|Rest],
+  Ety = (x\y\ {{ @eq lp:A lp:x lp:y }}),
+  R = {{ fun (x y : lp:A) (e : lp:(Ety x y)) => lp:(Bo x y e) }},
+  @pi-decl `x` A x\
+  @pi-decl `y` A y\
+  @pi-decl `e` (Ety x y) e\
+    coq.build-match e (Ety x y) (rty  A Rest x) (body-branch Rest x) (Bo x y e).
+
+func rty term, list term, term, term, list term, list term -> term.
+rty  A Rest X _ [Y,E] _ R :-    args-ty E X Y [A|Rest] Rest [Y] R.
+
+func body-branch list term, term, term, term, list term, list term -> term.
+body-branch Rest Y _ _ _ _ R :-      args             Rest [Y] R.
+
+}
+
+func main int.
+main N :-
+  Name is "cast" ^ {any->string N},
+  aux.body N N [] Bo,
+  std.assert-ok! (coq.typecheck Bo Ty) "derive.cast generates illtyped term",
+  coq.env.add-const Name Bo Ty _ C,
+  coq.elpi.accumulate _ "derive.cast.db" (clause _ _ (cast-db N (global (const C)))).
+
+}

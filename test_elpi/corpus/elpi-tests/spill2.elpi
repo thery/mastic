@@ -1,0 +1,15 @@
+data tm.
+typeabbrev stack (list tm).
+
+pred whd tm, stack -> tm, stack.
+whd X [] X [].
+
+pred unwind tm, stack -> tm.
+unwind X [] X.
+
+pred do list (pred).
+do [P] :- P.
+
+% main :- (  whd X [] A B, unwind A B Y : list prop ).
+main :- do [  unwind {whd X []} Y ].
+% main :- (  unwind {whd X []} Y : prop ).

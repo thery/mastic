@@ -1,0 +1,59 @@
+/* core of injection                                                         */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+shorten std.{append, drop, length, do!}.
+
+namespace ltac.injection {
+
+pred arg-i int, int, term, inductive, list term, int, constructor, list term, term, term, term -> list term.
+arg-i MAX MAX _ _ _ _ _ _ _ _ _ [] :- !.
+arg-i J MAX EQF GR TyArgs Pno GRK KArgs A B H R :- J < MAX,
+  I is J + 1,
+  if (projK-db GRK I Proj) (do! [
+      drop Pno KArgs Defaults,
+      coq.mk-app Proj {append TyArgs Defaults} ProjectorSkel,
+      coq.mk-app {coq.env.global (indt GR)} TyArgs Ty,
+      coq.elaborate-skeleton ProjectorSkel (prod _ _ _\Ty2) Projector ok, % FIXME whd
+      coq.mk-app EQF [Ty,Ty2,Projector,A,B,H] P,
+      R = [P|RS]
+  ]) (R = RS),
+ arg-i I MAX EQF GR TyArgs Pno GRK KArgs A B H RS.
+
+}
+
+namespace ltac {
+
+% Tests if the command can be applied
+pred injection? term -> inductive, list term, constructor, list term, term, term.
+injection? Ty GR TyArgs GRK KArgs A B :- do! [
+  whd Ty [] {{lib:@elpi.eq}} [T,A,B],
+  whd T  [] IndT TyArgs,
+  whd A  [] K KArgs,
+  whd B  [] KB _,
+  coq.env.global (indt GR) IndT,
+  coq.env.global (indc GRK) K,
+  coq.env.global (indc GRB) KB,
+  GRK = GRB
+].
+
+% Does the job
+pred injection! term, inductive, list term, constructor, list term, term, term -> list term.
+injection! H GR TyArgs GRK KArgs A B PL :- do! [
+  coq.env.indt GR _ Pno _ _ _ _,
+  length KArgs Argsno,
+  Eqno is Argsno - Pno,
+  ltac.injection.arg-i 0 Eqno {{lib:@elpi.derive.eq_f}} GR TyArgs Pno GRK KArgs A B H PL
+].
+
+% Main entry point with assertion that H can be injected
+pred injection term, term, term -> list term.
+injection H EqAB _ PL :-
+  if (injection? EqAB    GR TyArgs  GRK KArgs  A B)
+     (injection! H       GR TyArgs  GRK KArgs  A B PL)
+     (coq.error "injection:" {coq.term->string H} "of type"
+                {coq.term->string EqAB} "does not equate equal constructors").
+
+}
+
+% vim:set ft=lprolog spelllang=:

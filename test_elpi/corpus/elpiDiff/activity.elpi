@@ -1,0 +1,48 @@
+% activity.elpi — varied: the forward half of activity analysis.
+%
+% A value is varied when it depends on an independent argument. The judgment is
+% structural; the only fixpoint is the state of a fold, and it takes a single
+% extra pass, since a boolean flips at most once. The backward half, useful,
+% and the values the reverse sweep needs are computed together in tbr.elpi.
+
+shorten adjudge.{ operation2 }.
+
+namespace adjudge {
+
+func comparison binary.
+comparison F :- operation2 F _ _ boolean _.
+
+% varied A: the atom A depends on an independent argument. A bound variable is
+% declared varied when its binder is opened: an argument from its role, the
+% value of a let or the state of a fold from what it is bound to.
+func varied atom.
+
+% varied-value E, varied-anf B: the value E, the body B depends on an independent argument.
+func varied-value value bare.
+varied-value (a-op1 _ A) :- !, varied A.
+varied-value (a-op2 F _ _) :- comparison F, !, fail.
+varied-value (a-op2 _ A B) :- !, std.exists! [A, B] varied.
+varied-value (a-get A _) :- !, varied A.
+varied-value (a-set A _ V) :- !, std.exists! [A, V] varied.
+varied-value (a-ite _ T E) :- !, std.exists! [T, E] varied-anf.
+varied-value (a-map _ _ B) :- !, pi i\ varied-anf (B i).
+varied-value (a-fold _ _ _ I B) :- fold-varied I B.
+
+func varied-anf anf bare.
+varied-anf (a-let _ E B) :- !, let-binder E (x\ varied-anf (B x)).
+varied-anf (a-ret X) :- varied X.
+
+% The state of a fold is varied when its initial value is, or when one pass of
+% the body makes it varied starting from a passive state.
+func fold-varied atom, (atom -> atom -> anf bare).
+fold-varied I _ :- varied I, !.
+fold-varied _ B :- pi i\ pi s\ varied-anf (B i s).
+
+% Opening binders knowing whether the bound value is varied.
+func let-binder value bare, (func atom).
+let-binder E P :- if (varied-value E) (pi x\ varied x =!=> P x) (pi x\ P x).
+
+func fold-binders atom, (atom -> atom -> anf bare), (func atom, atom).
+fold-binders I B P :- if (fold-varied I B) (pi i\ pi s\ varied s =!=> P i s) (pi i\ pi s\ P i s).
+
+}

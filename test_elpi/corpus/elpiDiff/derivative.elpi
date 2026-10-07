@@ -1,0 +1,176 @@
+% derivative.elpi — L2, the derivative IR: what tangent.elpi and adjoint.elpi
+% produce, and what lower.elpi turns into the target language.
+%
+% An imperative program whose variables are bound by Elpi binders, like the
+% object language, and never named by a string. Differentiation decides which
+% values, tangents, adjoints and tapes exist and in which order they are
+% computed; it chooses neither their C++ names nor their C++ types, which are
+% lower.elpi's business. The adjoint of a value is computed far from the value,
+% in the reverse sweep, so a variable cannot be bound where it is first used:
+% every variable of a generated function is bound at its head, in the order of
+% creation (`scoped`). An argument keeps its C++ name (`named`); a local gets a
+% fresh one (`fresh`, with the prefix of that name).
+
+shorten adjudge.{ of, written, argument, varied-role, varied }.
+
+kind dvar type.                                    % a variable of the generated code
+type dot-of     dvar -> dvar.                      % its tangent
+type bar-of     dvar -> dvar.                      % its adjoint
+type tape-of    dvar -> dvar.                      % the tape of its successive values
+type result-var dvar.                              % the returned value: its tangent or adjoint is an argument
+
+kind dexpr type.
+type d-var  dvar -> dexpr.
+type d-real string -> dexpr.                       % a real literal, spelled as in the source: "0", "2", "-1"
+type d-int  int -> dexpr.
+type d-at   dexpr -> dexpr -> dexpr.               % e[i]
+type d-op1  unary -> dexpr -> dexpr.
+type d-op2  binary -> dexpr -> dexpr -> dexpr.
+
+kind dsort type.
+type d-constant ty -> dsort.                       % a value of this type, never reassigned
+type d-mutable  dsort.                             % a real, reassigned or accumulated
+
+kind dstmt type.
+type d-define    dsort -> dvar -> dexpr -> dstmt.  % a variable and its initial value
+type d-real-var  dvar -> dstmt.                    % a real assigned later, in both branches of a test
+type d-tape      dvar -> dstmt.                    % an empty tape
+type d-assign    dexpr -> dexpr -> dstmt.
+type d-increment dexpr -> dexpr -> dstmt.          % the adjoint accumulation
+type d-branch    dexpr -> list dstmt -> list dstmt -> dstmt.
+type d-for       dvar -> dexpr -> dexpr -> list dstmt -> dstmt.   % lo <= i < hi, upward
+type d-for-back  dvar -> dexpr -> dexpr -> list dstmt -> dstmt.   % the same indices, downward
+type d-push      dvar -> dexpr -> dstmt.           % records a value on a tape
+type d-pop       dvar -> dexpr -> dstmt.           % restores the last recorded value
+type d-return    dexpr -> dstmt.
+
+% How a generated function receives an argument.
+kind dpass type.
+type by-value      dpass.
+type by-ref        dpass.                          % written
+type by-cref       dpass.                          % read only
+type by-ref-unused dpass.                          % the caller's storage, never accessed
+
+kind dparam type.
+type dparam dpass -> ty -> dvar -> dparam.
+
+kind dreturn type.
+type d-returns-real dreturn.
+type d-void         dreturn.
+
+kind dbody type.
+type dbody dreturn -> list dparam -> list dstmt -> dbody.
+
+% A value under the binders of the variables it mentions, in order of creation.
+kind scoped type -> type.
+type named string -> (dvar -> scoped A) -> scoped A.   % an argument, with its C++ name
+type fresh string -> (dvar -> scoped A) -> scoped A.   % a local, with the prefix of its name
+type done  A -> scoped A.
+
+kind dfunction type.
+type dfunction string -> scoped dbody -> dfunction.
+
+typeabbrev code (scoped (list dstmt)).
+
+namespace adjudge {
+
+% sbind S K R: R is K applied to the value of S, under the binders of S followed
+% by those K creates. Composing with sbind keeps the order of creation.
+func sbind scoped A, (func A -> scoped B) -> scoped B.
+sbind (done X) K R :- !, K X R.
+sbind (named N F) K (named N R) :- !, pi v\ sbind (F v) K (R v).
+sbind (fresh P F) K (fresh P R) :- pi v\ sbind (F v) K (R v).
+
+% sflatten Ss R: the statements of Ss, in order, under all their binders.
+func sflatten list code -> code.
+sflatten [] (done []) :- !.
+sflatten [S | Ss] R :- sbind S (sflatten-rest Ss) R.
+
+func sflatten-rest list code, list dstmt -> code.
+sflatten-rest Ss X R :- sflatten Ss Rest, sbind Rest (sprepend X) R.
+
+func sprepend list dstmt, list dstmt -> code.
+sprepend X Y (done Z) :- std.append X Y Z.
+
+% What a transformation knows about a variable bound by L1,
+% set when its binder is opened.
+func stored atom -> dvar.                          % the variable of the generated code that holds it
+func has-dot atom.                                 % it carries a tangent (tangent mode)
+func has-bar atom.                                 % it carries an adjoint (reverse mode)
+
+% spell A E: an atom as an expression.
+func spell atom -> dexpr.
+spell (a-num S) (d-real S) :- !.
+spell (a-nat K) (d-int K) :- !.
+spell X (d-var V) :- stored X V.
+
+% spell-partial P E: a partial derivative as an expression.
+func spell-partial pexpr -> dexpr.
+spell-partial (p-atom A) E :- !, spell A E.
+spell-partial (p-num S) (d-real S) :- !.
+spell-partial (p-op1 F A) (d-op1 F E) :- !, spell-partial A E.
+spell-partial (p-op2 F A B) (d-op2 F EA EB) :- spell-partial A EA, spell-partial B EB.
+
+% dot X E: the tangent of an atom, 0 when it has none.
+func dot atom -> dexpr.
+dot X (d-var (dot-of V)) :- has-dot X, !, stored X V.
+dot _ (d-real "0").
+
+% bar X E: the adjoint of an atom; fails when it carries no derivative.
+func bar atom -> dexpr.
+bar X (d-var (bar-of V)) :- has-bar X, stored X V.
+
+func scale dexpr, dexpr -> dexpr.
+scale (d-real "1") E E :- !.
+scale (d-real "-1") E (d-op1 neg E) :- !.
+scale P E (d-op2 mul P E).
+
+func sum list dexpr -> dexpr.
+sum [] (d-real "0") :- !.
+sum [E] E :- !.
+sum [E | Es] (d-op2 add E S) :- sum Es S.
+
+% with-storage E B K R: K applied to the variable that holds the value bound by
+% `let E B`: for arrays, the storage updated in place (the loop state, or the
+% written argument); otherwise a fresh local.
+func with-storage value ann, (atom -> anf ann), (func dvar -> scoped A) -> scoped A.
+with-storage (a-set A _ _) _ K R :- !, stored A V, K V R.
+with-storage (a-fold _ _ _ Init _) _ K R :- of Init (array _), !, stored Init V, K V R.
+with-storage (a-map _ _ _) (x\ a-ret x) K R :- written Y, !, stored Y V, K V R.
+with-storage _ _ K (fresh "t" R) :- pi v\ K v (R v).
+
+% Opening the binders of L1ᵃ with everything the transformations know about
+% them. A varied value gets a tangent and an adjoint; whether they are used is
+% read from the annotations.
+
+% with-arguments D K R: binds the arguments of the definition D, then runs K on
+% the arguments with their variables, the result and the body. An argument is
+% varied, with a tangent and an adjoint, when its role says so.
+func with-arguments adefinition ann, (func list (pair decl dvar), aresult, anf ann -> scoped A) -> scoped A.
+with-arguments D K R :- open-arguments D [] K R.
+
+func open-arguments adefinition ann, list (pair decl dvar), (func list (pair decl dvar), aresult, anf ann -> scoped A) -> scoped A.
+open-arguments (a-body (a-writes Y) B) Acc K R :- !, std.rev Acc Args, written Y =!=> K Args (a-writes Y) B R.
+open-arguments (a-body Res B) Acc K R :- !, std.rev Acc Args, K Args Res B R.
+open-arguments (a-arg N T Ro F) Acc K (named N R) :- varied-role Ro, !,
+  pi v\ pi x\ [argument x N Ro, of x T, stored x v, varied x, has-dot x, has-bar x] =!=>
+    open-arguments (F x) [pr (decl N T Ro) v | Acc] K (R v).
+open-arguments (a-arg N T Ro F) Acc K (named N R) :-
+  pi v\ pi x\ [argument x N Ro, of x T, stored x v] =!=>
+    open-arguments (F x) [pr (decl N T Ro) v | Acc] K (R v).
+
+func open-let ty, dvar, bool, (func atom).
+open-let T V ff P :- !, pi x\ [of x T, stored x V] =!=> P x.
+open-let T V tt P :- pi x\ [of x T, stored x V, varied x, has-dot x, has-bar x] =!=> P x.
+
+% open-fold Varied T V I P: the index and the state of a fold, held in I and V;
+% Varied, from the annotation of the fold, says whether the state is varied.
+func open-fold bool, ty, dvar, dvar, (func atom, atom).
+open-fold tt T V I P :- !,
+  pi i\ pi s\ [of i integer, stored i I, of s T, stored s V, varied s, has-dot s, has-bar s] =!=> P i s.
+open-fold ff T V I P :- pi i\ pi s\ [of i integer, stored i I, of s T, stored s V] =!=> P i s.
+
+func open-index dvar, (func atom).
+open-index I P :- pi i\ [of i integer, stored i I] =!=> P i.
+
+}

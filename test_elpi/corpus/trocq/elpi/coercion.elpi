@@ -1,0 +1,52 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                            %                     Trocq                      %
+%  _______                   %        Copyright (C) 2023 Inria & MERCE        %
+% |__   __|                  %     (Mitsubishi Electric R&D Centre Europe)    %
+%    | |_ __ ___   ___ __ _  %        Cyril Cohen <cyril.cohen@inria.fr>      %
+%    | | '__/ _ \ / __/ _` | %        Enzo Crance <enzo.crance@inria.fr>      %
+%    | | | | (_) | (_| (_| | %    Assia Mahboubi <assia.mahboubi@inria.fr>    %
+%    |_|_|  \___/ \___\__, | %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                        | | %   This file is distributed under the terms of  %
+%                        |_| %   GNU Lesser General Public License Version 3  %
+%                            % (see LICENSE file for the text of the license) %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% -----------------------------------------------------------------------------
+% Tries to coerce a term into another with trocq
+% -----------------------------------------------------------------------------
+
+accumulate "Trocq.Elpi/param".
+
+
+pred translate-goal i:list prop, i:term, i:term, i:param-class, o:term, o:term.
+translate-goal DB Ty G C G' GR' :- DB => std.do! [
+  coq.reduction.lazy.norm Ty (sort S),
+  cstr.init,
+  T = asort S C,
+  logging.debug (coq.say "[translate-goal] will translate" G "at level" T),
+  term->aterm G AG,
+  % generate the associated goal G' and witness GR
+  param AG T G' GR,
+  logging.debug (coq.say "[translate-goal] after translation: goal" G' "with proof" GR),
+  % reduce the graph, so the variables all become ground in the terms
+  cstr.local-db DB,
+  cstr.reduce-graph,
+  logging.debug (coq.say "[translate-goal] Beta-reducing proof" GR),
+  %TODO make β-reduction directly in weaken predicate (Issue #63)
+  coq.reduction.lazy.bi-norm GR GR',
+  logging.debug (coq.say "[transalte-goal] After reductions: goal" {coq.term->string G'} "with proof" {coq.term->string GR'}),
+].
+
+
+pred coercion i:goal-ctx, i:term, i:term, i:term, o:term.
+coercion Ctx T G G' T' :- std.do! [
+  trocq.db.coercion-enabled,
+  
+  % We have a coercion challenge to change a term T of type G to a term
+  % T' of type T'.
+  coq.typecheck G TG ok,
+  do-not-fail => translate-goal [] TG G (pc map1 map0) G' GR,
+  util.mk-app {{ @map lp:G lp:G' lp:GR }} [T] T',
+].
+
+solve (goal Ctx _ Ty Sol [trm V, trm VTy]) _ :- 
+    coercion Ctx V VTy Ty Sol.

@@ -1,0 +1,8 @@
+pred f -> int.
+symb a int.
+
+main :- 
+  pattern_match (f 1) (f X),
+  print X,
+  not(pattern_match (f Y) (f a)),
+  print Y.

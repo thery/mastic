@@ -1,0 +1,23 @@
+% target.elpi — L3, the target language: C++ statements, first order, names as
+% strings. lower.elpi produces it from the derivative IR, cxx.elpi prints it.
+
+kind expr type.
+type id   string -> expr.                         % a variable
+type lit  string -> expr.                         % a literal, spelled
+type at   expr -> expr -> expr.                   % e[i]
+type call string -> list expr -> expr.            % an operator ("+", "<", "neg") or a function ("sin")
+
+kind stmt type.
+type declare   string -> string -> expr -> stmt.  % type name = init;
+type allocate  string -> string -> stmt.          % type name{};
+type assign    expr -> expr -> stmt.              % lhs = rhs;
+type increment expr -> expr -> stmt.              % lhs += rhs;   the adjoint accumulation
+type branch    expr -> list stmt -> list stmt -> stmt.
+type loop      string -> expr -> expr -> list stmt -> stmt.   % for (i = lo; i < hi; ++i)
+type loop-back string -> expr -> expr -> list stmt -> stmt.   % for (i = hi; i-- > lo;)
+type push      string -> expr -> stmt.            % tape.push_back(e);
+type pop       string -> expr -> stmt.            % lhs = tape.back(); tape.pop_back();
+type return    expr -> stmt.
+
+kind cfunction type.
+type cfunction string -> string -> list string -> list stmt -> cfunction.  % result type, name, arguments, body

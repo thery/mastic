@@ -1,0 +1,6 @@
+pred c1.
+
+:before "c"
+c1 
+
+main.

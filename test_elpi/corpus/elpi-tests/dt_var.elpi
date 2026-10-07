@@ -1,0 +1,16 @@
+:index(20)
+pred f int.
+f uvar :- print "uvar".
+f X :- var X, print "X".
+f 1 :- halt "bug".
+
+pred p list int.
+p [1,2,3] :- halt "bug p".
+p [1 | X] :- print "OK".
+
+pred exec (pred).
+exec P :- (P, fail); true.
+
+main :-
+  exec (f X),
+  exec (p [1 | Y]).

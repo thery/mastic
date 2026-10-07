@@ -1,0 +1,94 @@
+% operations.elpi — the elementary operations: their types, their C++ spelling,
+% and their partial derivatives.
+%
+% This table is the only calculus the tool knows. An operation is a constant of
+% type `unary` or `binary`, carried in a term by `op1` or `op2`, so that Elpi
+% itself checks its name and its arity. Adding an operation means declaring its
+% constant, its `operation1` or `operation2` row and its partial derivatives
+% here, and nowhere else: typing, activity, the two translations and the printer
+% all consult this table. A function is spelled unqualified: the printer adds
+% `using std::f;`, so that the generated code instantiates with dual numbers.
+
+type neg  unary.
+type sin  unary.
+type cos  unary.
+type exp  unary.
+type log  unary.
+type sqrt unary.
+type pow  int -> unary.                   % x |-> x^k: one unary operation per integer exponent
+
+type add    binary.
+type sub    binary.
+type mul    binary.
+type divide binary.                       % `div` is a reserved word of Elpi
+type lt     binary.
+type le     binary.
+type gt     binary.
+type ge     binary.
+
+namespace adjudge {
+
+% operation1 F Type Result Spelling
+func operation1 unary -> ty, ty, string.
+operation1 neg     real real "neg".
+operation1 sin     real real "sin".
+operation1 cos     real real "cos".
+operation1 exp     real real "exp".
+operation1 log     real real "log".
+operation1 sqrt    real real "sqrt".
+operation1 (pow _) real real "pow".
+
+% The literal arguments that follow the operand in the C++ call: the exponent of pow.
+func extra-arguments unary -> list string.
+extra-arguments (pow K) [S] :- !, S is int_to_string K.
+extra-arguments _ [].
+
+% operation2 F Type1 Type2 Result Spelling. An operation defined on two types
+% has one row per type; the first carries a cut so that a query with unknown
+% types (spelling, existence) gets one answer.
+func operation2 binary -> ty, ty, ty, string.
+operation2 add    real real       real    "+" :- !.
+operation2 add    integer integer integer "+".
+operation2 sub    real real       real    "-" :- !.
+operation2 sub    integer integer integer "-".
+operation2 mul    real real       real    "*".
+operation2 divide real real       real    "/".
+% comparisons are passive: no partial derivative
+operation2 lt     real real       boolean "<" :- !.
+operation2 lt     integer integer boolean "<".
+operation2 le     real real       boolean "<=" :- !.
+operation2 le     integer integer boolean "<=".
+operation2 gt     real real       boolean ">" :- !.
+operation2 gt     integer integer boolean ">".
+operation2 ge     real real       boolean ">=" :- !.
+operation2 ge     integer integer boolean ">=".
+
+% partial1 F A D: D is the derivative of `a-op1 F A` with respect to A, an expression over A.
+func partial1 unary, atom -> pexpr.
+partial1 neg     _ (p-num "-1").
+partial1 sin     A (p-op1 cos (p-atom A)).
+partial1 cos     A (p-op1 neg (p-op1 sin (p-atom A))).
+partial1 exp     A (p-op1 exp (p-atom A)).
+partial1 log     A (p-op2 divide (p-num "1") (p-atom A)).
+partial1 sqrt    A (p-op2 divide (p-num "1") (p-op2 mul (p-num "2") (p-op1 sqrt (p-atom A)))).
+partial1 (pow 0) _ (p-num "0") :- !.                     % x^0 is the constant 1
+partial1 (pow K) A (p-op2 mul (p-num S) (p-op1 (pow K1) (p-atom A))) :- K1 is K - 1, S is int_to_string K.
+
+% partial2 F A B DA DB: the derivatives of `a-op2 F A B` with respect to A and to B.
+func partial2 binary, atom, atom -> pexpr, pexpr.
+partial2 add    _ _ (p-num "1") (p-num "1").
+partial2 sub    _ _ (p-num "1") (p-num "-1").
+partial2 mul    A B (p-atom B) (p-atom A).
+partial2 divide A B (p-op2 divide (p-num "1") (p-atom B))
+                    (p-op1 neg (p-op2 divide (p-atom A) (p-op2 mul (p-atom B) (p-atom B)))).
+
+% The name of an operator, for diagnostics.
+func unary-name unary -> string.
+unary-name (unknown1 S) S :- !.
+unary-name F S :- term_to_string F S.
+
+func binary-name binary -> string.
+binary-name (unknown2 S) S :- !.
+binary-name F S :- term_to_string F S.
+
+}

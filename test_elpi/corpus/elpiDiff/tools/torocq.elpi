@@ -1,0 +1,74 @@
+% torocq.elpi — prints the primal functions of a case as Rocq terms, in the
+% PHOAS syntax of code/elpiDiff/rocq/Syntax.v, to compare the Rocq passes with
+% the Elpi ones. Used through a file accumulating it and the case:
+%   accumulate torocq.  accumulate primal.
+%   elpi -I <elpiDiff> -I <tools> -I <case> that-file.elpi -exec to-rocq
+
+accumulate adjudge.
+
+func rname term -> string.               % the Rocq name of a bound variable
+
+func to-rocq list string.
+to-rocq _ :- std.findall (primal _) Ps, std.forall Ps (p\ sigma F S\ p = primal F, rq-function F S, print S).
+
+func rq-function function -> string.
+rq-function (function N D) S :- rq-definition D 1 SD, S is "Definition " ^ N ^ "_fn : function := Function_ \"" ^ N ^ "\" (fun V => " ^ SD ^ ").".
+
+func rq-definition definition, int -> string.
+rq-definition (arg N T R F) K S :- !,
+  X is "x" ^ int_to_string K, K1 is K + 1, rq-ty T ST, rq-role R SR,
+  (pi x\ rname x X => rq-definition (F x) K1 SB),
+  S is "Arg \"" ^ N ^ "\" " ^ ST ^ " " ^ SR ^ " (fun " ^ X ^ " => " ^ SB ^ ")".
+rq-definition (body (returns T) B) K S :- !, rq-ty T ST, rq-term B K SB, S is "Body (Returns " ^ ST ^ ") " ^ SB.
+rq-definition (body (writes Y) B) K S :- rq-term Y K SY, rq-term B K SB, S is "Body (Writes " ^ SY ^ ") " ^ SB.
+
+func rq-ty ty -> string.
+rq-ty real "Real" :- !.
+rq-ty integer "Integer" :- !.
+rq-ty boolean "Boolean" :- !.
+rq-ty (array N) S :- S is "(Array " ^ int_to_string N ^ ")".
+
+func rq-role role -> string.
+rq-role independent "Independent" :- !.
+rq-role dependent "Dependent" :- !.
+rq-role inout "Inout" :- !.
+rq-role passive "Passive".
+
+func rq-int int -> string.
+rq-int N S :- if (N < 0) (S is "(" ^ int_to_string N ^ ")") (S is int_to_string N).
+
+func rq-unary unary -> string.
+rq-unary neg "Neg" :- !.   rq-unary sin "Sin" :- !.   rq-unary cos "Cos" :- !.
+rq-unary exp "Exp" :- !.   rq-unary log "Log" :- !.   rq-unary sqrt "Sqrt" :- !.
+rq-unary (pow K) S :- !, rq-int K SK, S is "(Pow " ^ SK ^ ")".
+rq-unary (unknown1 N) S :- S is "(Unknown1 \"" ^ N ^ "\")".
+
+func rq-binary binary -> string.
+rq-binary add "Add" :- !.  rq-binary sub "Sub" :- !.  rq-binary mul "Mul" :- !.
+rq-binary divide "Divide" :- !.  rq-binary lt "Lt" :- !.  rq-binary le "Le" :- !.
+rq-binary gt "Gt" :- !.  rq-binary ge "Ge" :- !.
+rq-binary (unknown2 N) S :- S is "(Unknown2 \"" ^ N ^ "\")".
+
+% rq-term T K S: T as a Rocq term; its binders are named from xK on.
+func rq-term term, int -> string.
+rq-term (num L) _ S :- !, S is "(Num \"" ^ L ^ "\")".
+rq-term (nat N) _ S :- !, rq-int N SN, S is "(Nat " ^ SN ^ ")".
+rq-term (op1 F A) K S :- !, rq-unary F SF, rq-term A K SA, S is "(Op1 " ^ SF ^ " " ^ SA ^ ")".
+rq-term (op2 F A B) K S :- !, rq-binary F SF, rq-term A K SA, rq-term B K SB, S is "(Op2 " ^ SF ^ " " ^ SA ^ " " ^ SB ^ ")".
+rq-term (get A I) K S :- !, rq-term A K SA, rq-term I K SI, S is "(Get " ^ SA ^ " " ^ SI ^ ")".
+rq-term (set A I V) K S :- !, rq-term A K SA, rq-term I K SI, rq-term V K SV, S is "(Set_ " ^ SA ^ " " ^ SI ^ " " ^ SV ^ ")".
+rq-term (let E B) K S :- !,
+  rq-term E K SE, X is "x" ^ int_to_string K, K1 is K + 1,
+  (pi x\ rname x X => rq-term (B x) K1 SB),
+  S is "(Let_ " ^ SE ^ " (fun " ^ X ^ " => " ^ SB ^ "))".
+rq-term (ite C T E) K S :- !, rq-term C K SC, rq-term T K ST, rq-term E K SE, S is "(Ite " ^ SC ^ " " ^ ST ^ " " ^ SE ^ ")".
+rq-term (map Lo Hi B) K S :- !,
+  rq-term Lo K SL, rq-term Hi K SH, X is "x" ^ int_to_string K, K1 is K + 1,
+  (pi x\ rname x X => rq-term (B x) K1 SB),
+  S is "(Map " ^ SL ^ " " ^ SH ^ " (fun " ^ X ^ " => " ^ SB ^ "))".
+rq-term (fold Lo Hi I B) K S :- !,
+  rq-term Lo K SL, rq-term Hi K SH, rq-term I K SI,
+  X is "x" ^ int_to_string K, Y is "x" ^ int_to_string (K + 1), K2 is K + 2,
+  (pi x\ pi y\ [rname x X, rname y Y] => rq-term (B x y) K2 SB),
+  S is "(Fold " ^ SL ^ " " ^ SH ^ " " ^ SI ^ " (fun " ^ X ^ " " ^ Y ^ " => " ^ SB ^ "))".
+rq-term X _ S :- rname X N, S is "(Var " ^ N ^ ")".

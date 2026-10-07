@@ -1,0 +1,27 @@
+/* To test run q X; the only expected result is X=ok.
+   This is different from the brain-damaged semantics of Teyjus
+   and consistent with the implicit declaration
+   ; A B :- A.
+   ; A B :- B
+*/
+data i.
+symb one i.
+pred x -> i, diagnostic.
+symb two i.
+pred q -> diagnostic.
+symb ko2 diagnostic.
+symb ko1 diagnostic.
+pred e -> diagnostic.
+pred c -> i.
+
+q X :- c Y, !, x Y X ; e X.
+q ok.
+
+c one.
+c two.
+
+x two ko1.
+
+e ko2.
+
+main :- q X, X = ok.

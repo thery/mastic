@@ -1,0 +1,24 @@
+data nat.
+symb zero nat.
+symb succ nat -> nat.
+
+func odd nat.
+func even nat.
+func double nat -> nat.
+
+even zero.
+odd (succ X) :- even X.
+even (succ X) :- odd X.
+even (uvar as X) :- declare_constraint (even X) [X].
+odd (uvar as X) :- declare_constraint (odd X) [X].
+
+double zero zero.
+double (succ X) (succ (succ Y)) :- double X Y.
+double (uvar as X) Y :- declare_constraint (double X Y) [X].
+
+main :- odd X, not(X = zero), not(double Z X).
+
+constraint even odd double {
+  rule (even X) (odd X) <=> fail.
+  rule (double _ Y) <=> (even Y).
+}

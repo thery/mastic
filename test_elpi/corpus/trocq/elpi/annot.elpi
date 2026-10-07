@@ -1,0 +1,94 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                            %                     Trocq                      %
+%  _______                   %        Copyright (C) 2023 Inria & MERCE        %
+% |__   __|                  %     (Mitsubishi Electric R&D Centre Europe)    %
+%    | |_ __ ___   ___ __ _  %        Cyril Cohen <cyril.cohen@inria.fr>      %
+%    | | '__/ _ \ / __/ _` | %        Enzo Crance <enzo.crance@inria.fr>      %
+%    | | | | (_) | (_| (_| | %    Assia Mahboubi <assia.mahboubi@inria.fr>    %
+%    |_|_|  \___/ \___\__, | %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                        | | %   This file is distributed under the terms of  %
+%                        |_| %   GNU Lesser General Public License Version 3  %
+%                            % (see LICENSE file for the text of the license) %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% -----------------------------------------------------------------------------
+% Links annotated terms with the constraint graph
+% -----------------------------------------------------------------------------
+
+accumulate "Trocq.Elpi.constraints/constraints-impl".
+
+macro @annot-pi-decl N AT F :- pi ax\ annot.adecl ax N AT => F ax.
+
+namespace annot {
+
+% typechecking a term calls Coq's typechecker, which gives back a non annotated term
+% calling term->aterm on it will add fresh annotations
+% if we want to typecheck a variable several times and get the same type everytime, we need to
+% add some memory, which is the purpose of adecl
+func adecl aterm -> name, aterm.
+
+pred typecheck i:aterm, o:aterm.
+typecheck T ATy :- adecl T _ ATy, !.
+% TODO We should recode this function in order to intelligently typecheck
+% λ x : AT, t' ==> AT' -> _ with AT' <= AT
+% For now, new annotations are created, so AT is discarded
+% Before, we relied on rocq copying the lambda annotation and we had AT -> _
+typecheck AT ATy :-
+  aterm->term AT T,
+  coq.typecheck T Ty ok,
+  term->aterm Ty ATy.
+
+% sub-typing predicate following the sub-typing rules in the article
+% This should only be called between two types
+pred sub-type i:aterm, i:aterm.
+sub-type AT AT' :-
+  logging.trace (coq.say "[sub-type] Checking wether" AT "<=" AT'), fail.
+% SubSort
+% We don't check wether S and S' are related.
+% We need to think this again when algebraic types will be added to Rocq
+sub-type (asort _S C) (asort _S' C') :- !,
+  cstr.geq C C'.
+% SubPi
+sub-type (aprod N AT AF) (aprod _ AT' AF') :- !,
+  sub-type AT' AT, !,
+  @annot-pi-decl N AT' x\ sub-type (AF x) (AF' x).
+% SubLam
+sub-type (afun N AT AF) (afun _ AT AF') :- !,
+  @annot-pi-decl N AT x\ sub-type (AF x) (AF' x).
+% SubApp
+sub-type (aapp [ (afun _ _ AF),AX1|AXs]) (aapp [(afun _ _ AF'),AX1'|AXs']) :- !,
+  % We beta-reduce
+  sub-type (aapp [(AF AX1) | AXs]) (aapp [(AF' AX1') | AXs']).
+sub-type (aapp [X|AXs] as T) (aapp [X|AXs']) :- !,
+  (name X ; X = aglobal _ ; X = apglobal _ _ ; trocq.error "[sub-type] Input" T "is not a type"), !,
+  std.forall2 AXs AXs' eq.
+% SubConv
+sub-type X X :- (name X ; X = aglobal _ ; X = apglobal _ _), !.
+sub-type X Y :- trocq.error "[annot/sub-type]" X "is not a sub-type of" Y.
+
+% syntactic term equality, taking care of adding annotation equalities in the constraint graph
+% This should only be called between two types
+pred eq i:aterm, i:aterm.
+eq AT AT' :-
+  logging.trace (coq.say "[eq] Checking equality" AT "==" AT'), fail.
+eq (asort S C1) (asort S C2) :-
+  cstr.eq C1 C2.
+eq (aprod _ AT AF) (aprod _ AT' AF') :- !,
+  eq AT AT', !,
+  pi x\ eq (AF x) (AF' x).
+eq (afun _ AT AF) (afun _ AT' AF') :- !,
+  eq AT AT', !,
+  pi x\ eq (AF x) (AF' x).
+eq X Y :- unify-eq X Y ok.
+eq (aapp AL) (aapp AL') :- !,
+  std.forall2 AL AL' eq.
+eq X X :- (name X ; X = aglobal _ ; X = apglobal _ _), !.
+
+pred unify-eq i:aterm i:aterm o:diagnostic.
+% TODO this should implement rocq unification algorithm and create equalities for param classes
+% along the way.
+% This is not implemented right now, and is replaced with term equality
+unify-eq AT AT' ok :- AT = AT'.
+unify-eq AT AT' ok :- coq.unify-eq {aterm->term AT} {aterm->term AT'} ok.
+unify-eq AT AT' _ :- trocq.error "[annot/unify-eq] Could not unify" AT "with" AT'.
+
+} % annot

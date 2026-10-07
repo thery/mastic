@@ -1,0 +1,74 @@
+/* Entry point for all derivations                                           */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+namespace derive {
+
+pred dep -> string, string.
+dep X Y :- dep1 X Y.
+dep X Y :- dep1 X Z, dep Z Y.
+
+func selected string ->.
+selected Name :- get-option "only" Map, !,
+  Map ==> (get-option Name _; (get-option X _, dep X Name)), !.
+selected _.
+
+:index (_ 1)
+func chain string, list derive ->.
+chain _ [].
+chain T [derive Name _ _|FS] :- not(selected Name), !,
+  chain T FS.
+chain T [derive _ _ AlreadyDone|FS] :- ((pi x\ stop x :- !, fail) ==> AlreadyDone), !,
+  chain T FS.
+chain T [derive _ F _|FS] :- get-option "only" _, !, % request this one
+  F _,
+  chain T FS.
+chain T [derive _ F _|FS] :- % all are selected, we can fail
+  ((pi x\ stop x :- !, fail) ==> F _), !,
+  chain T FS.
+chain T [derive _ _ _|FS] :-
+  chain T FS.
+
+func toposort list derive -> list derive.
+toposort L SL :-
+  std.findall (dep1 _ _) Deps,
+  topo L Deps SL.
+
+func not-a-src list (pred), derive ->.
+not-a-src Deps (derive A _ _) :- not(std.mem! Deps (dep1 A _)).
+
+:index (1)
+func tgt-is-not-in list derive, (pred) ->.
+tgt-is-not-in [] _.
+tgt-is-not-in [derive Tgt _ _|_] (dep1 _ Tgt) :- !, fail.
+tgt-is-not-in [_|L] D :- tgt-is-not-in L D.
+
+func topo list derive, list (pred) -> list derive.
+topo [] _ [] :- !.
+topo L Deps SL :-
+  std.partition L (not-a-src Deps) LNoDeps Other,
+  if (LNoDeps = []) (coq.error "derive: no topological order:" L Deps) true,
+  std.filter Deps (tgt-is-not-in LNoDeps) NewDeps,
+  topo Other NewDeps SOther,
+  std.append LNoDeps SOther SL.
+
+func main string ->.
+main TypeName :- get-option "module" M, !,
+  if (M = "") (Mod = TypeName) (Mod = M),
+  coq.env.begin-module Mod none,
+  main-derive TypeName tt,
+  coq.env.end-module _.
+main TypeName :-
+  main-derive TypeName ff.
+
+func main-derive string, bool ->.
+main-derive TypeName InModule :- 
+  if (get-option "prefix" PFX)
+     (Prefix = PFX)
+     (if (InModule is ff) (Prefix is TypeName ^ "_") (Prefix = "")),
+  std.findall (derivation TypeName Prefix _) L,
+  std.map L (x\r\ x = derivation _ _ r) DL,
+  toposort DL SortedDL,
+  chain TypeName SortedDL.
+
+}

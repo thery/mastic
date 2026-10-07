@@ -1,0 +1,170 @@
+accumulate "Trocq.Elpi.inductives/common_algo".
+accumulate "Trocq.Elpi.inductives/utils".
+
+shorten derive.algo-utils.{type-of-args, whd-fuel, iota-step, invert-eqs, rewrite-with}.
+shorten derive.common-algo.{mk-mR-type-symK}.
+shorten derive.algo-utils.{cmp-indt}.
+
+namespace derive.symK {
+
+% delta delta iota
+pred red-symK i:term, i:stack, o:term,o:stack.
+red-symK X C R RS :-
+  whd-fuel X C 2 XX CC,
+  iota-step XX CC R RS.
+
+pred pierce-goal-symK i:int, i:int, i:int, i:term, i: list term, o: list term, o: term.
+pierce-goal-symK _ N N Goal [] [] Goal.
+pierce-goal-symK TyParamNo N InitArgs CurrentGoal [Eq|Eqs] [Pat|Pats] EndGoal :-
+  M is N + 1,
+  coq.safe-dest-app CurrentGoal EqGoal [EqGoalTy,GoalLHS,GoalRHS],
+  coq.safe-dest-app GoalLHS KR Args,
+  Done is (TyParamNo * 3) + N * 3,
+  std.split-at Done Args L [A1,A2, SymSym | R],
+  coq.typecheck SymSym Ty ok,
+  (pi t\
+    coq.mk-app KR {std.append L {std.append [A1, A2, t] R}} (NewKR t),
+    coq.mk-app EqGoal [EqGoalTy,(NewKR t),GoalRHS] (NewEqGoal t)),
+  Pat = (fun `t` Ty  t\ (NewEqGoal t)),
+  coq.typecheck Eq EqTy ok,
+  coq.safe-dest-app EqTy _ [_,LHS,_],
+  coq.mk-app Pat [LHS] NewGoal,
+  pierce-goal-symK TyParamNo M InitArgs NewGoal Eqs Pats EndGoal.
+
+% [|K|], remaining args, number of type args, KRTy, Type of args Ksource, Type of args KDest, Goal,
+pred process-args i:term, i:term, i:term, i:int,i:int, i:int, i:term, i:list term, i:term, i:term, o:term.
+process-args KsS KsD KR 0 ArgNo TyArgsNo _ RevEqs Goal _ R:-
+  !,
+  std.rev RevEqs Eqs,
+  invert-eqs Eqs IEqs,
+  coq.mk-app Goal [KsS,KsD,KR] SubstGoal,
+  whd SubstGoal [] HD [IRTy,SymSymIR,IR],
+  red-symK SymSymIR [] KRHD KRArgs,
+  coq.mk-app KRHD KRArgs RedLHS,
+  coq.mk-app HD [IRTy,RedLHS,IR] StartingGoal,
+  pierce-goal-symK TyArgsNo 0 ArgNo StartingGoal IEqs PatsSym _,
+  End = {{ lib:@trocq.idpath lp:IRTy lp:IR }},
+  rewrite-with IEqs PatsSym End R.
+
+process-args KsS KsD KR N O TyArgsNo (prod AN1 A1Ty a1\ prod AN2 A2Ty a2\ prod ARN (ARTy a1 a2) ar\ (Bo a1 a2 ar)) Eqs Goal ITyTy
+                                   (fun AN1 A1Ty a1\ fun AN2 A2Ty a2\ fun ARN (ARTy a1 a2) ar\ (RF a1 a2 ar)):-
+  M is N - 1,
+  @pi-decl AN1 A1Ty a1\
+  @pi-decl AN2 A2Ty a2\
+  @pi-decl ARN (ARTy a1 a2) ar\
+
+    coq.mk-app KsS [a1] (NewKsS a1),
+    coq.mk-app KsD [a2] (NewKsD a2),
+    coq.mk-app KR [a1,a2,ar] (NewKR a1 a2 ar),
+
+    cmp-indt A2Ty ITyTy IndD Ind,
+    symK-db IndD SymKA2,
+    coq.mk-app SymKA2 [a1, a2, ar] (SymKEq a1 a2 ar),
+    std.append [(SymKEq a1 a2 ar)] Eqs (NewEqs a1 a2 ar),
+    (param a2 a1 ar =!=>
+    process-args (NewKsS a1) (NewKsD a2) (NewKR a1 a2 ar) M O TyArgsNo (Bo a1 a2 ar) (NewEqs a1 a2 ar) Goal ITyTy (R a1 a2 ar)),
+    % if the type of the argument is an instance of the inductive type add an induction hypothesis
+    if (Ind = IndD)
+       (coq.mk-app Goal [a1, a2, ar] (EqTy a1 a2 ar),
+        (RF a1 a2 ar) = fun `e` (EqTy a1 a2 ar) e\ (R a1 a2 ar))
+        (RF = R).
+
+% invariant: all type arguments were already processed.
+% Constructor R, Constructor dest Type, No of Arguments to process,
+% constructorR Type, type of i2, something of type : i1 i2 iR => goal.
+pred mkBranch i:term, i:term, i:term, i:int, i:int, i:term, i:term, i:term, o:term.
+mkBranch KsS KsD KR N M KTyR ITyTy Goal Eq:-
+  whd ITyTy [] _ TyArgs,
+  process-args KsS KsD KR N M {std.length TyArgs} KTyR [] Goal ITyTy Eq.
+
+pred mkBranches i:list term, i:list term, i:list term, i:list term, i:list term, i:term, i:term o:list term.
+mkBranches [] [] [] [] [] _ _ [].
+mkBranches [KsS|KsSs] [KsD| KsDs] [KR|KRs][KTy|KTys] [KTyR|KTyRs] ITyTy Goal [R|Rs] :-
+  coq.count-prods KTy ArgNo,
+  mkBranch KsS KsD KR ArgNo ArgNo KTyR ITyTy Goal RSkel,
+  (@keepunivs! => coq.elaborate-skeleton RSkel _ R ok),
+  mkBranches KsSs KsDs KRs KTys KTyRs ITyTy Goal Rs.
+
+pred implement-symK i:int, i:int, i:term, i:list term, i:list term, i:list term, i:list term, i:list term, i:term, i:term, o:term.
+% Pred comes with Type parameters applied
+% RInd comes with Type parameters applied
+implement-symK 0 _TyParamNo (prod IN1 ITy1 i1\ prod IN2 ITy2 i2\ prod ARN (ARTy i1 i2) ar\ (Bo i1 i2 ar)) KsS KsD KRs KTys KTyRs Pred RInd
+            (fix `f` 2 RT f\ fun IN1 ITy1 i1\ fun IN2 ITy2 i2\ fun ARN (ARTy i1 i2) ar\ (R f i1 i2 ar)) :-
+  coq.safe-dest-app ITy2 Ind _,
+  coq.env.global (indt GR) Ind,
+  coq.env.recursive? GR, !,
+  RT = (prod IN1 ITy1 i1\ prod IN2 ITy2 i2\ prod ARN (ARTy i1 i2) ar\ (Bo i1 i2 ar)),
+  coq.mk-app RInd [Pred] RIndP,
+  @pi-decl `f` RT f\
+  @pi-decl IN1 ITy1 i1\
+  @pi-decl IN2 ITy2 i2\
+  @pi-decl ARN (ARTy i1 i2) ar\
+    (symK-db Ind f =>
+      mkBranches KsS KsD KRs KTys KTyRs ITy2 Pred (Brs f)),
+    std.append (Brs f) [i1,i2,ar] (IndArgs f i1 i2 ar),
+    coq.mk-app RIndP (IndArgs f i1 i2 ar) (R f i1 i2 ar).
+implement-symK 0 _TyParamNo (prod IN1 ITy1 i1\ prod IN2 ITy2 i2\ prod ARN (ARTy i1 i2) _) KsS KsD KRs KTys KTyRs Pred RInd
+            (fun IN1 ITy1 i1\ fun IN2 ITy2 i2\ fun ARN (ARTy i1 i2) ar\ (R i1 i2 ar)) :-
+  !,
+  coq.mk-app RInd [Pred] RIndP,
+  @pi-decl IN1 ITy1 i1\
+  @pi-decl IN2 ITy2 i2\
+  @pi-decl ARN (ARTy i1 i2) ar\
+    mkBranches KsS KsD KRs KTys KTyRs ITy2 Pred Brs,
+    std.append Brs [i1,i2,ar] (IndArgs i1 i2 ar),
+    coq.mk-app RIndP (IndArgs i1 i2 ar) (R i1 i2 ar).
+implement-symK N TyParamNo (prod AN1 ATy1 a1\ prod AN2 ATy2 a2\ prod ARN (ARTy a1 a2) ar\ (Bo a1 a2 ar)) KsS KsD KRs KTys KTyRs Pred RInd
+            (fun AN1 ATy1 a1\ fun AN2 ATy2 a2\ fun ARN (ARTy a1 a2) ar\ (R a1 a2 ar)) :-
+  M is N - 1,
+  @pi-decl AN1 ATy1 a1\ %A1 : Type
+  @pi-decl AN2 ATy2 a2\ %A2 : Type
+  @pi-decl ARN (ARTy a1 a2) ar\ % AR : Param00.Rel A1 A2
+    coq.mk-app Pred [a1,a2,ar] (NewPred a1 a2 ar),
+
+    (ARType a1 a2) = {{ lp:a1 -> lp:a2 -> Type }},
+    coq.elaborate-skeleton ar (ARType a1 a2) (RelAR a1 a2 ar) ok,
+
+    coq.mk-app RInd [a1,a2,ar] (NewRIndSkel a1 a2 ar),
+    coq.elaborate-skeleton (NewRIndSkel a1 a2 ar) _ (NewRInd a1 a2 ar) ok,
+
+    std.map KsS (x\ r\ sigma TMP\ coq.mk-app x [a1] TMP, r = TMP) (NewKsS a1),
+    std.map KsD (x\ r\ sigma TMP\ coq.mk-app x [a2] TMP, r = TMP) (NewKsD a2),
+    std.map KRs (x\ r\ sigma TMP\ coq.mk-app x [a1,a2, (RelAR a1 a2 ar)] TMP, r = TMP) (NewKRs a1 a2 ar),
+
+    std.map KTys (x\ r\ sigma TMP\ coq.subst-prod [a2] x TMP, r = TMP) (NewKTys a2),
+    std.map KTyRs (x\ r\ sigma TMP1\ coq.subst-prod [a1,a2,(RelAR a1 a2 ar)] x TMP1, r = TMP1) (NewKTyRs a1 a2 ar),
+
+    (SymFun a1 a2 ar) = {{ fun (a1 : lp:{{a1}}) (a2 : lp:{{a2}}) (ar : (lp:{{ar}} a1 a2))=> lib:@trocq.idpath (lp:{{ar}} a1 a2) ar }},
+    symK-db a2 (SymFun a1 a2 ar) ==>
+    implement-symK M TyParamNo (Bo a1 a2 ar) (NewKsS a1) (NewKsD a2) (NewKRs a1 a2 ar) (NewKTys a2) (NewKTyRs a1 a2 ar) (NewPred a1 a2 ar) (NewRInd a1 a2 ar) (R a1 a2 ar).
+
+func main inductive, string -> list prop.
+main GR Prefix Clauses :- std.do! [
+
+  coq.env.indt GR _ TyParamNo _ _ KNs KTys,
+  coq.env.global (indt GR) Ind,
+  std.assert! (param Ind Ind TR) "derive.sym: use derive.param2 before",
+  coq.typecheck TR TRTy ok,
+  std.assert! (sym-db Ind SymInd) "derive.sym: use derive.sym before",
+  mk-mR-type-symK TyParamNo TRTy TR SymInd SymKTy,
+  (@keepunivs! => std.assert-ok! (coq.elaborate-skeleton SymKTy _ SymKTyE) "derive.symK generates illtyped type"),
+  (@keepunivs! => coq.env.global (indt GRR) TR),
+  coq.gref->id (indt GRR) Rname,
+  RInductionName is Rname ^ "_rect",
+  coq.locate RInductionName RInd,
+  coq.prod->fun SymKTyE Pred,
+  coq.env.indt GRR _ _ _ _ KRNs KTyRs,
+  std.map KNs (x\ r\ r = {coq.env.global (indc x)}) Ks,
+  std.map KRNs (x\ r\ r = {coq.env.global (indc x)}) KRs,
+  implement-symK TyParamNo TyParamNo SymKTyE Ks Ks KRs KTys KTyRs Pred {coq.env.global RInd} R,
+  (@keepunivs! => std.assert-ok! (coq.elaborate-skeleton R SymKTyE Re) "derive.symK generates illtyped term"),
+  Name is Prefix ^ "symK",
+  coq.ensure-fresh-global-id Name FName,
+  (@dropunivs! => coq.env.add-const FName Re SymKTyE _ C),
+  Clauses = [symK-done GR, symK-def (indt GR) (const C)],
+  std.forall Clauses (x\
+    coq.elpi.accumulate _ "derive.symK.db" (clause _ _ x)
+  ),
+].
+
+}

@@ -1,0 +1,43 @@
+module test.
+/*
+infixl x+,y+ 190.
+infixr x++ 191.
+prefixr z+ 191.
+postfixl w+ 190.
+infixl x* 200.
+*/
+X +x D.
+
+foo xx uu.
+
+~z x ?w.
+
+x *x y +x z *x w.
+
+a +x b +x c +x d +x e.
+a ++x b ++x c ++x d ++x e.
+
+pred a.
+pred b.
+pred d.
+pred x.
+pred xx.
+pred w.
+pred y.
+pred z.
+pred c.
+pred cd.
+pred e.
+pred uu.
+pred f -> (pred).
+pred g -> list (pred).
+pred foo -> (pred), (pred).
+pred (~z) -> (pred).
+pred (?w) -> (pred).
+pred (+x) -> (pred), (pred).
+pred (++x) -> (pred), (pred).
+symb (+y) A -> B -> C.
+symb (*x) A -> B -> C.
+
+main :- print (f a +x g [b] +y d), cd +x d.
+

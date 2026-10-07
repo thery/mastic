@@ -1,0 +1,294 @@
+/*        Hierarchy Builder: algebraic hierarchies made easy
+    This software is released under the terms of the MIT license              */
+
+% Kit to build abbreviations /à la/ *pack*, that is
+%   [Notation N x_0 .. x_n := C x_0 .. _ _ id .. x_i .. _ id _ _ id]
+% with a variable number of [_] between each [id], and where
+% - [x_i] is given by the user
+% - [_]   correspond to arguments that are left implicit,
+% - [id]  trigger unification as described in
+% - [Phant x] to infer the canonical structure on x
+%
+% See /Canonical Structures for the working Coq user/ by Mahboubi and Tassi
+
+% This type is private, build it via the APIs below
+typeabbrev phant-term phant.private.phant-term.
+
+namespace phant {
+
+% [add-abbreviation Name PhT C A] builds a definition "phant_Name" for the
+% term T and an abbreviation Name as per Ph.
+% Use the API below to build a PhT as you like.
+func add-abbreviation string, phant-term -> constant, abbreviation.
+add-abbreviation N (private.phant-term AL T1) C Abbrev :- std.do! [
+  NC is "phant_" ^ N,
+  std.assert-ok! (coq.elaborate-skeleton T1 TTy T) "add-abbreviation: T illtyped",
+  log.coq.env.add-const-noimplicits NC T TTy @transparent! C,
+  private.build-abbreviation 0 (global (const C)) AL NParams AbbrevT,
+  @global! => log.coq.notation.add-abbreviation N NParams AbbrevT tt Abbrev,
+].
+
+% [of-gref WithCopy GR RealMixinArgs PT]
+% builds a phant-term taking all parameters,
+% the type, then inferring automatically all structures covering the mixins
+% GR depends on. RealMixinArgs is a list of mixins one wants to explicitly
+% pass (instead of being inferred)
+% If WithCopy = tt, an extra argument is added after all the parameters
+% and before the source keu to replace the target key by a user chosen one.
+func of-gref bool, gref, list mixinname -> phant-term.
+of-gref WithCopy GRF RealMixinArgs PhBody:- !, std.do! [
+  std.assert! (gref->deps GRF MLwP) "mk-phant-term: unknown gref",
+  std.assert! (coq.env.typeof GRF FTy) "mk-phant-term: F illtyped",
+  coq.mk-eta (-1) FTy (global GRF) EtaF,
+  % toposort-mixins ML MLSorted,
+  MLwP = MLwPSorted, % Assumes we give them already sorted in dep order.
+  std.rev {list-w-params_list MLwPSorted} MLSortedRev,
+  std.map RealMixinArgs (m\ r\ r = private.this-mixin-is-real-arg m) RMClauses,
+  std.filter MLSortedRev (m\ not(std.mem! RealMixinArgs m)) MLSortedRevFiltered,
+  find-max-classes MLSortedRevFiltered CNL,
+  assert-good-coverage! MLSortedRevFiltered CNL,
+
+  RMClauses => if (WithCopy = ff)
+    (w-params.then MLwP fun-real fun-real
+      (ps\ t\ ml\ o\ private.mk-phant-term.classes EtaF CNL ps t t ml o) PhBody)
+    (w-params.fold MLwP fun-real
+      (private.mk-phant-term-with-copy EtaF CNL) PhBody
+  )
+].
+
+% API à la carte: start with a term and wrap it up -------------------------
+
+% A term with no phantom arguments
+func init term -> phant-term.
+init T (private.phant-term [] T).
+
+% [fun-real N T Ph Ph1] Adds a real argument named N of type T around Ph
+func fun-real name, term, (term -> phant-term) -> phant-term.
+fun-real N T F Res :- !, private.phant-fun (private.real N) T F Res.
+
+% [fun-unify Msg X1 X2 Ph Ph1] Adds an argument that will foce the unification
+% of X1 with X2 and print Msg is case of error around Ph
+func fun-unify option term, term, term, phant-term -> phant-term.
+fun-unify OMsg X1 X2 (private.phant-term AL F) (private.phant-term [private.unify|AL] UF) :-
+  std.assert-ok! (coq.typecheck X1 T1) "fun-unify: X1 illtyped",
+  std.assert-ok! (coq.typecheck X2 T2) "fun-unify: X2 illtyped",
+  if (OMsg = some M) (Msg = {{lib:hb.not_a_msg lp:M}}) (Msg = {{lib:hb.nomsg}}),
+  UF = {{fun unif_arbitrary : lib:hb.unify lp:T1 lp:T2 lp:X1 lp:X2 lp:Msg => lp:F}}.
+
+% [fun-implicit N T Ph Ph1] Adds an implicit argument name N of type T areound Ph
+func fun-implicit name, term, (term -> phant-term) -> phant-term.
+fun-implicit N Ty (t\ private.phant-term AL (F t))
+                  (private.phant-term [private.implicit|AL] (fun N Ty F)).
+
+% [fun-infer-type N T Ph Ph1] Adds an argument N of type T such that one passes
+% a value V of type {{ Type }} the corresponding canonical VC of type T is passed
+% for N , eg `fun T (phT : phant T) => Ph`
+func fun-infer-type class, name, term, (term -> phant-term) -> phant-term.
+fun-infer-type sortclass N Ty (t\private.phant-term AL (Bo t)) Out :-
+  coq.name-suffix N "ph" PhN,
+  fun-implicit N Ty (t\private.phant-term [private.infer-type N sortclass|AL]
+                                          (fun PhN {{ lib:@hb.phant lp:t }} _\ Bo t)) Out.
+fun-infer-type funclass N Ty (t\private.phant-term AL (Bo t)) Out :-
+  coq.name-suffix N "ph" PhN,
+  fun-implicit N Ty (t\private.phant-term [private.infer-type N funclass|AL]
+                                          (fun PhN {{ lib:@hb.phantom (_ -> _) lp:t }} _\ Bo t)) Out.
+fun-infer-type (grefclass Class) N Ty (t\private.phant-term AL (Bo t)) Out :-
+  coq.name-suffix N "ph" PhN, private.build-type-pattern Class Pat,
+  fun-implicit N Ty (t\private.phant-term [private.infer-type N (grefclass Class)|AL]
+                                          (fun PhN {{ lib:@hb.phantom lp:Pat lp:t }} _\ Bo t)) Out.
+
+% TODO: this looks like a hack to remove
+func append-fun-unify phant-term -> phant-term.
+append-fun-unify (private.phant-term LP T) (private.phant-term LPU T) :-
+  std.append LP [private.unify] LPU.
+
+/* ------------------------------------------------------------------------- */
+/* ----------------------------- private code ------------------------------ */
+/* ------------------------------------------------------------------------- */
+
+namespace private {
+
+% phant-term is a pair of a list of argument kinds together with a term
+kind phant-term type.
+type phant-term list phant-arg -> term -> phant-term.
+
+% phant-arg encode these three kind of arguments
+% - [x_i] is encoded using [real x_i]
+% - [_]              using [implicit]
+% - [id]             using [unify]
+% - [Phant x]        using [infer-type]
+kind phant-arg type.
+type real name -> phant-arg.
+type infer-type name -> class -> phant-arg.
+type implicit phant-arg.
+type unify phant-arg.
+
+shorten coq.{ mk-app }.
+
+pred this-mixin-is-real-arg o:mixinname.
+
+func phant-fun phant-arg, term, (term -> phant-term) -> phant-term.
+phant-fun Arg Ty PhF (phant-term [Arg|ArgL] (fun N Ty F)) :-
+  if (Arg = real N) true (N = `_`),
+  @pi-decl N Ty x\ PhF x = phant-term ArgL (F x).
+
+% [phant-fun-mixin N Ty PF PUF] states that PUF is a phant-term
+% which quantifies [PF x] over [x : Ty] (with name N)
+% Ty must be an (applied) mixin M, and the phantom status of this mixin
+% is determined by [this-mixin-is-real-arg M].
+func phant-fun-mixin name, term, (term -> phant-term) -> phant-term.
+phant-fun-mixin N Ty PF (private.phant-term [Status|AL] (fun N Ty F)) :- !, std.do! [
+  @pi-decl N Ty t\ PF t = private.phant-term AL (F t),
+  coq.safe-dest-app Ty (global Mixin) _,
+  if (this-mixin-is-real-arg Mixin) (Status = private.real N) (Status = private.implicit)
+].
+
+func fun-unify-mixin term, name, term, (term -> phant-term) -> phant-term.
+fun-unify-mixin T N Ty PF Out :- !, std.do! [
+  coq.safe-dest-app Ty (global M) _,
+  Msg is "fun-unify-mixin: No mixin-src on " ^ {coq.term->string T},
+  std.assert! (mixin-src T M Msrc) Msg,
+  (@pi-decl `m` Ty m\ fun-unify none m Msrc (PF m) (PFM m)),
+  fun-implicit N Ty PFM Out
+].
+
+% [phant-fun-struct T S Params PF PSF] states that PSF is a phant-term
+% which postulate a structure [s : S Params] such that [T = sort s]
+% and then outputs [PF s]
+func phant-fun-struct term, name, structure, list term, (term -> phant-term) -> phant-term.
+phant-fun-struct T Name S Params PF Out :- std.do! [
+  get-structure-sort-projection S SortProj,
+  mk-app (global S) Params SParams,
+  mk-app SortProj Params SortProjParams,
+  % Msg = {{lib:hb.nomsg}},
+  Msg = some {{lp:SParams}},
+  (@pi-decl Name SParams s\ fun-unify Msg T {mk-app SortProjParams [s]} (PF s) (UnifSI s)),
+  fun-implicit Name SParams UnifSI Out
+].
+
+% A *pack* notation can be easiliy produced from a phant-term using
+% [add-abbreviation N PT C], which states that C is a new constant
+% which name is phant_N, and which produces a simple notation
+% with name N using the data of the phant-term PT to reconstruct a notation
+% [Notation N x0 .. xn := C x0 _ _ id .. xi .. _ id _ _ id]
+% as described above.
+func build-abbreviation int, term, list phant-arg -> int, term.
+build-abbreviation K F [] K F.
+build-abbreviation K F [real N|AL] K'' (fun N _ AbbrevFx) :- !,
+  pi x\ build-abbreviation K {mk-app F [x]} AL K' (AbbrevFx x),
+  K'' is K' + 1.
+build-abbreviation K F [infer-type N sortclass|AL] K'' (fun N _ AbbrevFx) :- !,
+  pi x\ build-abbreviation K {mk-app F [{{ lib:hb.Phant lp:x }}]} AL K' (AbbrevFx x),
+  K'' is K' + 1.
+build-abbreviation K F [infer-type N funclass|AL] K'' (fun N _ AbbrevFx) :- !,
+  pi x\ build-abbreviation K {mk-app F [{{ lib:hb.Phantom (_ -> _) lp:x }}]} AL K' (AbbrevFx x),
+  K'' is K' + 1.
+build-abbreviation K F [infer-type N (grefclass Class)|AL] K'' (fun N _ AbbrevFx) :- !,
+  build-type-pattern Class Pat,
+  pi x\ build-abbreviation K {mk-app F [{{ lib:hb.Phantom lp:Pat lp:x }}]} AL K' (AbbrevFx x),
+  K'' is K' + 1.
+build-abbreviation K F [implicit|AL] K' FAbbrev :- !,
+  build-abbreviation K {mk-app F [_]} AL K' FAbbrev.
+build-abbreviation K F [unify|AL] K' FAbbrev :- !,
+  build-abbreviation K {mk-app F [{{lib:@hb.id _ _}}]} AL K' FAbbrev.
+
+% [build-type-pattern GR Pat] cheks that GR : forall x_1 ... x_n, Type
+% and returns Pat = GR _ ... _ (that is GR  applied to n holes).
+% Note that n can be 0 when GR : Type.
+func build-type-pattern gref -> term.
+build-type-pattern GR Pat :- build-type-pattern.aux GR {coq.env.typeof GR} Pat.
+func build-type-pattern.aux gref, term -> term.
+build-type-pattern.aux GR T {{ lp:Pat _ }} :- coq.unify-eq T (prod N S T') ok, !,
+  @pi-decl N S x\ build-type-pattern.aux GR (T' x) Pat.
+build-type-pattern.aux GR T (global GR) :- coq.unify-eq T {{ Type }} ok, !.
+build-type-pattern.aux _ _ _ :- coq.error "HB: wrong carrier type".
+
+
+% [mk-phant-term F PF] states that
+% if F = fun p1 .. p_k T m_0 .. m_n => _
+% then PF = phant-term
+%   [real p_1, ... real p_k, real T, implicit, .., implicit,
+%       implicit, .., implicit,
+%         implicit, unify,
+%         implicit, unify,
+%         implicit, .., implicit, unify,
+%         unify, ..., unify,
+%       ...,
+%       implicit, .., implicit,
+%         implicit, unify,
+%         implicit, unify,
+%         implicit, .., implicit, unify,
+%         unify, ..., unify]
+%   {{fun p_1 ... p_k T m_0 .. m_n =>
+%       fun q_1 .. q_l =>
+%         [find t   | T ~ t]
+%         [find s_0 | t ~ s_0]
+%         [find c_0 | s_0 ~ SK q_1 .. q_l t c_0]
+%         [find m'_{i_0_0}, .., m'_{i_0_n0} | c_0 ~ CK m'_{i_0_0} .. m'_{i_0_n0}]
+%         fun & hb.unify m_{i_0_0} m'_{i_0_0} & ... & hb.unify m_{i_0_n0} m'_{i_0_n0} =>
+%       ...
+%       fun q'_1 .. q'_l' =>
+%         [find t   | T ~ t]
+%         [find s_k | t ~ s_k]
+%         [find c_k | s_k ~ SK q'_1 .. q'_l' y c_k]
+%         [find m'_{i_k_0}, .., m'_{i_k_nk} | c_0 ~ CK m'_{i_k_0} .. m'_{i_k_nk}]
+%         fun & hb.unify m_{i_0_0} m'_{i_0_0} & ... & hb.unify m_{i_k_nk} m'_{i_k_nk} =>
+%       F p_1 ... p_k T m_i0_j0 .. m_il_jl}}
+func mk-phant-term.mixins term, term, classname, phant-term,
+  list term, name, term, (term -> list (w-args mixinname)) -> phant-term.
+mk-phant-term.mixins Target Src CN PF Params N Ty MLwA Out :- std.do! [
+  class-def (class CN SI _),
+  mk-app (global SI) Params SIParams,
+  coq.name-suffix N "local" Nlocal,
+  (@pi-decl Nlocal Ty t\ sigma SK KC ML ParamsT SKPT\ std.do! [
+    std.map (MLwA t) triple_1 ML,
+    std.append Params [t] ParamsT,
+    SKPT = app [global {get-constructor SI} | ParamsT],
+    ClassTy t = app [global CN | ParamsT],
+    (@pi-decl `s` SIParams s\ @pi-decl `c` (ClassTy t) c\ sigma PF2\ std.do![
+       synthesis.under-mixins.then (MLwA t) (fun-unify-mixin Target)
+          (mk-phant-term.mixins.aux t Params c CN PF) PF2,
+       fun-unify none s {mk-app SKPT [c]} PF2 (PFU t s c),
+       ]),
+    Body t = {fun-unify none t Src
+               {phant-fun-struct t `s` SI Params s\
+                 {fun-implicit `c` (ClassTy t) (PFU t s)}}}
+  ]),
+  fun-implicit Nlocal Ty Body Out
+].
+
+mk-phant-term.mixins.aux T Params C CN PF X :- std.do![
+  get-constructor CN KC,
+  synthesis.infer-all-gref->deps Params T KC KCM,
+  fun-unify none KCM C PF X,
+].
+
+func mk-phant-term.class
+  term, term, classname, phant-term -> phant-term.
+mk-phant-term.class Target Src CN PF CPF :- !, std.do! [
+  class-def (class CN _ CMLwP),
+  w-params.fold CMLwP fun-implicit
+    (mk-phant-term.mixins Target Src CN PF) CPF,
+].
+
+func mk-phant-term.classes
+  term, list classname, list term, term, term,
+  list (w-args mixinname) -> phant-term.
+mk-phant-term.classes EtaF CNF PL Target Src MLwA PhF :- !, std.do! [
+  std.map MLwA triple_1 ML,
+  synthesis.under-mixins.then MLwA phant-fun-mixin (out\ sigma FPLTM\ std.do! [
+    synthesis.infer-all-these-mixin-args PL Target ML EtaF FPLTM,
+    std.fold CNF (phant-term [] FPLTM) (mk-phant-term.class Target Src) out]) PhF
+].
+
+func mk-phant-term-with-copy term, list classname,
+  list term, name, term,
+  (term -> list (w-args mixinname)) -> phant-term.
+mk-phant-term-with-copy EtaF CNF PL N Ty MLwA PhF :- !, std.do! [
+  (@pi-decl N Ty target\ @pi-decl N Ty src\ sigma Body\
+    mk-phant-term.classes EtaF CNF PL target src (MLwA target) Body,
+    fun-unify none target src Body (BodyUnif target src)),
+  fun-real N Ty (target\ {fun-real N Ty (BodyUnif target)}) PhF
+].
+
+}}

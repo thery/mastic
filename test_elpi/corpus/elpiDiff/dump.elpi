@@ -1,0 +1,179 @@
+% dump.elpi — readable printers for the intermediate languages, to debug the
+% passes and to explain them: L1 and L1ᵃ (A-normal form, without or with its
+% annotations) and L2 (the derivative IR, before or after simplification). L0 is
+% the `primal` the user writes, L3 is printed as C++ by cxx.elpi.
+%
+% The printers name the bound variables themselves, numbering them per
+% function, so that dumping a stage never changes the names of the generated
+% C++, which come from a counter global to the file.
+
+shorten adjudge.{ operation2, unary-name, binary-name, var-name, dname }.
+
+namespace adjudge {
+
+% Operators, shared by L1 and L2.
+func op1-string unary, string, string -> string.         % the operator, its operand bare and parenthesized
+op1-string neg _ P S :- !, S is "-" ^ P.
+op1-string (pow K) A _ S :- !, S is "pow(" ^ A ^ ", " ^ int_to_string K ^ ")".
+op1-string F A _ S :- unary-name F N, S is N ^ "(" ^ A ^ ")".
+
+func op2-symbol binary -> string.
+op2-symbol F S :- operation2 F _ _ _ S, !.
+op2-symbol F S :- binary-name F S.
+
+func ty-string ty -> string.
+ty-string real "real" :- !.
+ty-string integer "int" :- !.
+ty-string boolean "bool" :- !.
+ty-string (array N) S :- S is "real[" ^ int_to_string N ^ "]".
+
+% --- L1 and L1ᵃ ---------------------------------------------------------------
+
+func aname atom -> string.                                % the name of a bound atom, set when the printer opens its binder
+
+func atom-string atom -> string.
+atom-string (a-num S) S :- !.
+atom-string (a-nat K) S :- !, S is int_to_string K.
+atom-string X S :- aname X S.
+
+% The annotations, as the printer of a binder shows them.
+func no-ann bare -> string.
+no-ann _ "".
+
+func ann-string ann -> string.
+ann-string (let-ann V A C) S :- !, flags [pr V "varied", pr A "active", pr C "computed"] S.
+ann-string (fold-ann V L R) S :- flags [pr V "state varied", pr L "state recorded", pr R "records"] S.
+
+func flags list (pair bool string) -> string.
+flags Fs S :-
+  std.map-filter Fs (f\ w\ f = pr tt w) Ws,
+  if (Ws = []) (S = "passive") (std.string.concat ", " Ws S).
+
+func tag string -> string.
+tag "" "" :- !.
+tag A S :- S is "    [" ^ A ^ "]".
+
+% pr-afunction An F L: the lines of F, its binders annotated by An.
+func pr-afunction (func I -> string), afunction I -> list string.
+pr-afunction An (a-function N D) L :- pr-definition An N [] D L.
+
+func pr-definition (func I -> string), string, list string, adefinition I -> list string.
+pr-definition An N Acc (a-arg A T R F) L :- !,
+  ty-string T TS, term_to_string R RS, S is A ^ ": " ^ TS ^ " " ^ RS,
+  pi x\ aname x A =!=> pr-definition An N [S | Acc] (F x) L.
+pr-definition An N Acc (a-body Res B) [H | LB] :-
+  std.rev Acc As, std.string.concat ", " As AS, result-string Res RS,
+  H is N ^ "(" ^ AS ^ ") " ^ RS ^ ":",
+  pr-body An "    " B 1 LB _.
+
+func result-string aresult -> string.
+result-string (a-returns T) S :- !, ty-string T TS, S is "returns " ^ TS.
+result-string (a-writes Y) S :- atom-string Y YS, S is "writes " ^ YS.
+
+% pr-body An In B K L K1: the lines of the body B at indentation In; its binders
+% are numbered from K, and K1 is the next free number.
+func pr-body (func I -> string), string, anf I, int -> list string, int.
+pr-body An In (a-let I E B) K L K2 :- !,
+  X is "t" ^ int_to_string K, K0 is K + 1,
+  An I A, tag A Tag,
+  pr-value An In X Tag E K0 LE K1,
+  (pi x\ aname x X =!=> pr-body An In (B x) K1 LB K2),
+  std.append LE LB L.
+pr-body _ In (a-ret X) K [L] K :- atom-string X S, L is In ^ "return " ^ S.
+
+func pr-value (func I -> string), string, string, string, value I, int -> list string, int.
+pr-value _ In X Tag (a-op1 F A) K [L] K :- !,
+  atom-string A S, op1-string F S S E, L is In ^ "let " ^ X ^ " = " ^ E ^ Tag.
+pr-value _ In X Tag (a-op2 F A B) K [L] K :- !,
+  atom-string A SA, atom-string B SB, op2-symbol F O,
+  L is In ^ "let " ^ X ^ " = " ^ SA ^ " " ^ O ^ " " ^ SB ^ Tag.
+pr-value _ In X Tag (a-get A I) K [L] K :- !,
+  atom-string A SA, atom-string I SI, L is In ^ "let " ^ X ^ " = " ^ SA ^ "[" ^ SI ^ "]" ^ Tag.
+pr-value _ In X Tag (a-set A I V) K [L] K :- !,
+  atom-string A SA, atom-string I SI, atom-string V SV,
+  L is In ^ "let " ^ X ^ " = " ^ SA ^ " with [" ^ SI ^ "] = " ^ SV ^ Tag.
+pr-value An In X Tag (a-ite C T E) K L K2 :- !,
+  atom-string C SC, In2 is In ^ "    ",
+  H is In ^ "let " ^ X ^ " = if " ^ SC ^ " then" ^ Tag, M is In ^ "  else",
+  pr-body An In2 T K LT K1, pr-body An In2 E K1 LE K2,
+  std.flatten [[H], LT, [M], LE] L.
+pr-value An In X Tag (a-map Lo Hi B) K [H | LB] K1 :- !,
+  atom-string Lo SL, atom-string Hi SH, I is "i" ^ int_to_string K, K0 is K + 1,
+  H is In ^ "let " ^ X ^ " = map " ^ I ^ " in [" ^ SL ^ ", " ^ SH ^ "):" ^ Tag,
+  In2 is In ^ "    ",
+  pi i\ aname i I =!=> pr-body An In2 (B i) K0 LB K1.
+pr-value An In X Tag (a-fold FI Lo Hi Init B) K [H | LB] K1 :-
+  atom-string Lo SL, atom-string Hi SH, atom-string Init SI,
+  I is "i" ^ int_to_string K, St is "s" ^ int_to_string K, K0 is K + 1,
+  An FI FA, tag FA FTag,
+  H is In ^ "let " ^ X ^ " = fold " ^ I ^ " in [" ^ SL ^ ", " ^ SH ^ ") from " ^ St ^ " = " ^ SI ^ ":" ^ Tag ^ FTag,
+  In2 is In ^ "    ",
+  pi i\ pi s\ [aname i I, aname s St] =!=> pr-body An In2 (B i s) K0 LB K1.
+
+% --- L2 -------------------------------------------------------------------------
+
+% pr-dfunction F L: the lines of F; fresh locals are numbered per function.
+func pr-dfunction dfunction -> list string.
+pr-dfunction (dfunction N S) L :- pr-scoped N S 1 L.
+
+func pr-scoped string, scoped dbody, int -> list string.
+pr-scoped N (named A F) K L :- !, pi v\ dname v A =!=> pr-scoped N (F v) K L.
+pr-scoped N (fresh P F) K L :- !,
+  X is P ^ int_to_string K, K1 is K + 1,
+  pi v\ dname v X =!=> pr-scoped N (F v) K1 L.
+pr-scoped N (done (dbody R Ps Ss)) _ [H | LB] :-
+  std.map Ps param-text Pss, std.string.concat ", " Pss PS,
+  if (R = d-returns-real) (RS = " returns real") (RS = ""),
+  H is N ^ "(" ^ PS ^ ")" ^ RS ^ ":",
+  pr-stmts "    " Ss LB.
+
+func param-text dparam -> string.
+param-text (dparam P T V) S :- pass-word P W, ty-string T TS, var-name V N, S is N ^ ": " ^ W ^ TS.
+
+func pass-word dpass -> string.
+pass-word by-value "".
+pass-word by-ref "ref ".
+pass-word by-cref "const ref ".
+pass-word by-ref-unused "unused ref ".
+
+func dexpr-string dexpr -> string.                       % at top level
+dexpr-string (d-op2 F A B) S :- !,
+  dexpr-operand A SA, dexpr-operand B SB, op2-symbol F O, S is SA ^ " " ^ O ^ " " ^ SB.
+dexpr-string E S :- dexpr-operand E S.
+
+func dexpr-operand dexpr -> string.                      % as an operand: parenthesized when infix
+dexpr-operand (d-var V) S :- !, var-name V S.
+dexpr-operand (d-real S) S :- !.
+dexpr-operand (d-int K) S :- !, S is int_to_string K.
+dexpr-operand (d-at A I) S :- !, dexpr-operand A SA, dexpr-string I SI, S is SA ^ "[" ^ SI ^ "]".
+dexpr-operand (d-op1 F A) S :- !, dexpr-string A SA, dexpr-operand A PA, op1-string F SA PA S.
+dexpr-operand E S :- dexpr-string E S0, S is "(" ^ S0 ^ ")".
+
+func pr-stmts string, list dstmt -> list string.
+pr-stmts In Ss L :- std.map Ss (pr-stmt In) Ls, std.flatten Ls L.
+
+func pr-stmt string, dstmt -> list string.
+pr-stmt In (d-define (d-constant T) V E) [L] :- !,
+  ty-string T TS, var-name V N, dexpr-string E S, L is In ^ "const " ^ TS ^ " " ^ N ^ " = " ^ S.
+pr-stmt In (d-define d-mutable V E) [L] :- !,
+  var-name V N, dexpr-string E S, L is In ^ "var real " ^ N ^ " = " ^ S.
+pr-stmt In (d-real-var V) [L] :- !, var-name V N, L is In ^ "var real " ^ N.
+pr-stmt In (d-tape V) [L] :- !, var-name V N, L is In ^ "tape " ^ N.
+pr-stmt In (d-assign A B) [L] :- !,
+  dexpr-string A SA, dexpr-string B SB, L is In ^ SA ^ " := " ^ SB.
+pr-stmt In (d-increment A B) [L] :- !,
+  dexpr-string A SA, dexpr-string B SB, L is In ^ SA ^ " += " ^ SB.
+pr-stmt In (d-branch C T E) L :- !,
+  dexpr-string C SC, In2 is In ^ "    ", H is In ^ "if " ^ SC ^ ":", M is In ^ "else:",
+  pr-stmts In2 T LT, pr-stmts In2 E LE, std.flatten [[H], LT, [M], LE] L.
+pr-stmt In (d-for I Lo Hi B) [H | LB] :- !,
+  var-name I N, dexpr-string Lo SL, dexpr-string Hi SH,
+  H is In ^ "for " ^ N ^ " in [" ^ SL ^ ", " ^ SH ^ "):", In2 is In ^ "    ", pr-stmts In2 B LB.
+pr-stmt In (d-for-back I Lo Hi B) [H | LB] :- !,
+  var-name I N, dexpr-string Lo SL, dexpr-string Hi SH,
+  H is In ^ "for " ^ N ^ " in [" ^ SL ^ ", " ^ SH ^ ") downward:", In2 is In ^ "    ", pr-stmts In2 B LB.
+pr-stmt In (d-push T E) [L] :- !, var-name T N, dexpr-string E S, L is In ^ "push " ^ S ^ " onto " ^ N.
+pr-stmt In (d-pop T E) [L] :- !, var-name T N, dexpr-string E S, L is In ^ S ^ " := pop " ^ N.
+pr-stmt In (d-return E) [L] :- dexpr-string E S, L is In ^ "return " ^ S.
+
+}

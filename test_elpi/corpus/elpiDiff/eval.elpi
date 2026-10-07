@@ -1,0 +1,86 @@
+% eval.elpi — the evaluator of L0, the source language.
+%
+% `eval D T V`: in the domain of numbers D (numbers.elpi), the term T has the
+% value V. A big-step semantics, one rule per construct, in the style of the
+% transformations: a binder of L0 is opened with the hypothesis `value-of x V`,
+% so there is neither substitution nor environment of names. It is meant to be
+% the specification the generated code is checked against, and the model of
+% the evaluation relation of a proof in Rocq.
+
+shorten adjudge.{ dom-lit, dom-op1, dom-op2, dom-cmp, comparison }.
+
+kind val type -> type.                     % a value whose reals are of type N
+type v-real  N -> val N.
+type v-int   int -> val N.
+type v-bool  bool -> val N.
+type v-array list N -> val N.
+
+namespace adjudge {
+
+func value-of term -> val N.               % the value of a bound variable, set when its binder is opened
+
+% eval-function D F Args V: F applied to Args, in order, has the value V: the
+% returned value, or the new value of the argument it writes.
+func eval-function domain N, function, list (val N) -> val N.
+eval-function D (function _ Def) Args V :- eval-definition D Def Args V.
+
+func eval-definition domain N, definition, list (val N) -> val N.
+eval-definition D (arg _ _ _ F) [A | As] V :- !, pi x\ value-of x A =!=> eval-definition D (F x) As V.
+eval-definition D (body _ B) [] V :- eval D B V.
+
+func eval domain N, term -> val N.
+eval D (num S) (v-real X) :- !, dom-lit D S X.
+eval _ (nat K) (v-int K) :- !.
+eval D (op1 F A) V :- !, eval D A VA, eval-op1 D F VA V.
+eval D (op2 F A B) V :- !, eval D A VA, eval D B VB, eval-op2 D F VA VB V.
+eval D (get A I) (v-real X) :- !, eval D A (v-array L), eval D I (v-int K), std.nth K L X.
+eval D (set A I E) (v-array L1) :- !,
+  eval D A (v-array L), eval D I (v-int K), eval D E (v-real X), replace-nth K X L L1.
+eval D (let E B) V :- !, eval D E VE, pi x\ value-of x VE =!=> eval D (B x) V.
+eval D (ite C T E) V :- !, eval D C (v-bool B), if (B = tt) (eval D T V) (eval D E V).
+eval D (map Lo Hi B) (v-array L) :- !,
+  eval D Lo (v-int I), eval D Hi (v-int J), eval-map D I J B L.
+eval D (fold Lo Hi Init B) V :- !,
+  eval D Lo (v-int I), eval D Hi (v-int J), eval D Init S, eval-fold D I J B S V.
+eval _ X V :- value-of X V.
+
+% Integers compute exactly, reals in the domain; a comparison gives a boolean.
+func eval-op1 domain N, unary, val N -> val N.
+eval-op1 D F (v-real X) (v-real Y) :- dom-op1 D F X Y.
+
+func eval-op2 domain N, binary, val N, val N -> val N.
+eval-op2 _ F (v-int X) (v-int Y) V :- !, int-op2 F X Y V.
+eval-op2 D F (v-real X) (v-real Y) (v-bool B) :- comparison F, !, dom-cmp D F X Y B.
+eval-op2 D F (v-real X) (v-real Y) (v-real Z) :- dom-op2 D F X Y Z.
+
+func int-op2 binary, int, int -> val N.
+int-op2 add X Y (v-int Z) :- !, Z is X + Y.
+int-op2 sub X Y (v-int Z) :- !, Z is X - Y.
+int-op2 mul X Y (v-int Z) :- !, Z is X * Y.
+int-op2 F X Y (v-bool B) :- if (int-holds F X Y) (B = tt) (B = ff).
+
+func int-holds binary, int, int.
+int-holds lt X Y :- !, X < Y.
+int-holds le X Y :- !, X =< Y.
+int-holds gt X Y :- !, X > Y.
+int-holds ge X Y :- X >= Y.
+
+% map: the array of the body at each index of [I, J).
+func eval-map domain N, int, int, (term -> term) -> list N.
+eval-map _ I J _ [] :- I >= J, !.
+eval-map D I J B [X | Xs] :-
+  (pi i\ value-of i (v-int I) =!=> eval D (B i) (v-real X)),
+  I1 is I + 1, eval-map D I1 J B Xs.
+
+% fold: the state after the body at each index of [I, J), in order.
+func eval-fold domain N, int, int, (term -> term -> term), val N -> val N.
+eval-fold _ I J _ S S :- I >= J, !.
+eval-fold D I J B S V :-
+  (pi i\ pi s\ [value-of i (v-int I), value-of s S] =!=> eval D (B i s) S1),
+  I1 is I + 1, eval-fold D I1 J B S1 V.
+
+func replace-nth int, A, list A -> list A.
+replace-nth 0 X [_ | L] [X | L] :- !.
+replace-nth K X [Y | L] [Y | L1] :- K1 is K - 1, replace-nth K1 X L L1.
+
+}

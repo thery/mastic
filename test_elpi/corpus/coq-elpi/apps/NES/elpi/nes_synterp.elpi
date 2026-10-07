@@ -1,0 +1,185 @@
+namespace nes {
+
+func ns->modpath (pred) -> modpath.
+ns->modpath (ns _ M) M.
+
+func open-ns->string (pred) -> string.
+open-ns->string (open-ns S _) S.
+
+func begin-ns string, list string, list (pred) -> list (pred).
+begin-ns NS Path In Out :-
+  if (Path = [])
+     (Fresh is NS ^ "_aux_" ^ {std.any->string {new_int} }, coq.env.begin-module Fresh none)
+     true,
+  coq.env.begin-module NS none,
+  coq.env.current-path CP,
+  Clause = open-ns NS CP,
+  Out = [Clause | In],
+  @local! =>
+  coq.elpi.accumulate current "NES.db"
+    (clause _ (after "open-ns:begin") Clause).
+
+func subpath list string, (pred) ->.
+subpath Path (ns Sub _) :- std.appendR _Prefix Path Sub, !.
+
+func submod modpath, (pred) ->.
+submod Mod (ns _ SubMod) :-
+  coq.modpath->path SubMod SubPath,
+  coq.modpath->path Mod ModPath,
+  std.appendR ModPath _Suffix SubPath, !.
+
+func undup list A, list A -> list A.
+undup [] _ [].
+undup [X|XS] Seen YS :- std.mem! Seen X, !, undup XS Seen YS.
+undup [X|XS] Seen [X|YS] :- undup XS [X|Seen] YS.
+
+% end-ns ID Stack ClauseIn ClauseOut
+func end-ns string, list string, list (pred) -> list (pred).
+end-ns NS Stack In Out :- In => std.do! [
+  std.rev Stack Path,
+  std.append Path [NS|END_] PathNoEnd,
+  std.findall (ns PathNoEnd M_) AllNS,
+  coq.env.end-module M,
+  % stuff inside M
+  std.filter AllNS (submod M) SubmodNS,
+  % since the current program still sees the clauses that will be dropped
+  % after closing M
+  undup SubmodNS [] SubmodNSNodup,
+
+  coq.locate-module NS M,
+  if (Path = [])
+     (std.do! [coq.env.end-module M_aux, coq.env.export-module M_aux, Local = @global!])
+     (Local = @local!),
+  % NES.Open can put clauses in scope
+  std.append Path [NS] NewPath,
+  New = [ns NewPath M | SubmodNSNodup],
+  std.append In New Out,
+  std.forall New (c\ Local => coq.elpi.accumulate current "NES.db" (clause _ _ c)),
+].
+
+:index (_ 1)
+func iter-> list A, list A, (func A, list A, list (pred) -> list (pred)), list (pred) -> list (pred).
+iter-> _ [] _ O O :- coq.error "No elements".
+iter-> INIT [X] F In Out :- !, F X INIT In Out.
+iter-> INIT [X|XS] F In Out :- F X {std.append XS INIT} In Mid, iter-> INIT XS F Mid Out.
+
+:index (_ 1)
+func iter<- list A, list A, (func A, list A, list (pred) -> list (pred)), list (pred) -> list (pred).
+iter<- _ [] _ _ _ :- coq.error "No elements".
+iter<- INIT [X] F In Out :- !, F X INIT In Out.
+iter<- INIT [X|XS] F In Out :- iter<- INIT XS F In Mid, F X {std.append XS INIT} Mid Out.
+
+% Panics unless [S] well-formed.
+func string->non-empty-ns string -> list string.
+string->non-empty-ns S L :- std.do! [
+  Ident = "[a-zA-Z_][a-zA-Z_0-9']*",	% non-unicode Coq identifiers
+  Path is "^\\(" ^ Ident ^ "\\.\\)*" ^ Ident ^ "$",
+  if (rex.match Path S) true (string->ns.err S),
+  rex.split "\\." S L,
+  if (std.mem L "_") (string->ns.err S) true,
+].
+func string->ns.err string ->.
+string->ns.err S :-
+  coq.error {calc ("NES: Bad <DotSeparatedPath>: \"" ^ S ^ "\"")}.
+
+% Panics unless [S] empty, or well-formed.
+func string->ns string -> list string.
+string->ns "" [] :- !.
+string->ns S L :- string->non-empty-ns S L.
+
+func ns->string list string -> string.
+ns->string NS S :- std.string.concat "." NS S.
+
+func begin-path list string -> list (pred).
+begin-path [] [] :- std.do! [
+  coq.begin-synterp-group "nes.begin-path" Group,
+  coq.end-synterp-group Group,
+].
+begin-path ([_|_] as Path) Out :- std.do! [
+  coq.begin-synterp-group "nes.begin-path" Group,
+  coq.env.current-path CP,
+  if (open-ns _ NSCP) (std.assert! (NSCP = CP) "NS: cannot begin a namespace inside a module that is inside a namespace") true,
+  std.map {std.findall (open-ns Y_ P_)} open-ns->string Stack,
+  if (Stack = []) true (std.do! [
+    coq.locate-all {std.string.concat "." Path} L,
+    if (std.do! [
+       std.mem L (loc-modpath M),
+       coq.modpath->path M MP,
+       MP = {std.append CP Path}
+    ])
+      (iter-> [] Stack end-ns [] _, iter<- [] Stack begin-ns [] _)
+      true,
+  ]),
+  iter<- Stack {std.rev Path} begin-ns [] Out,
+
+  open-super-path Path [],
+  coq.end-synterp-group Group,
+].
+
+func std.time-do! list (pred) ->.
+std.time-do! [].
+std.time-do! [P|PS] :-
+  std.time P T, coq.say P "\ntakes" T "\n",
+  !,
+  std.time-do! PS.
+
+func end-path list string -> list (pred).
+end-path [] [] :- std.do! [
+  coq.begin-synterp-group "nes.end-path" Group,
+  coq.end-synterp-group Group,
+].
+end-path ([_|_] as Path) Out :- std.do! [
+  coq.begin-synterp-group "nes.end-path" Group,
+  std.map {std.findall (open-ns X_ P_)} nes.open-ns->string Stack,
+  std.assert! (std.appendR {std.rev Path} Bottom Stack) "NES: Ending a namespace that is not begun",
+  nes.iter-> Bottom {std.rev Path} nes.end-ns [] Out,
+  coq.end-synterp-group Group,
+].
+
+
+func open-path list string ->.
+open-path Path :- std.do! [
+  coq.begin-synterp-group "nes.open-path" Group,
+  std.map {std.findall (ns Path M_)} nes.ns->modpath Mods,
+  std.forall Mods coq.env.import-module,
+  coq.end-synterp-group Group,
+].
+
+:index (1)
+func open-super-path list string, list string ->.
+open-super-path [] _.
+open-super-path [P|PS] ACC :-
+  std.append ACC [P] Cur,
+  open-path Cur,
+  open-super-path PS Cur.
+
+% Currently open namespace, or [].
+func current-path -> list string.
+current-path NS :- std.do! [
+  std.map {std.findall (open-ns X_ P_)} nes.open-ns->string Stack,
+  std.rev Stack NS,
+].
+
+% Find an existing namespace, or panic.
+func resolve string -> list string.
+resolve S Path :- std.do! [
+  if (Top = "^_\\.", rex.match Top S) (std.do! [
+    rex.replace Top "" S S',
+    string->non-empty-ns S' NS,
+    if (ns NS _) (Path = NS) (resolve.err S'),
+  ])(
+    resolve.walk S {current-path} {string->non-empty-ns S} Path
+  ),
+].
+func resolve.walk string, list string, list string -> list string.
+resolve.walk S Ctx SP Path :- std.do! [
+  std.append Ctx SP Candidate,
+  ( ns Candidate _, Path = Candidate
+  ; Ctx = [], resolve.err S
+  ; resolve.walk S {std.drop-last 1 Ctx} SP Path ),
+].
+func resolve.err string ->.
+resolve.err S :- coq.error "NES: Namespace not found:" S.
+
+
+}

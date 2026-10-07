@@ -1,0 +1,86 @@
+/* Links an inductive an its inverted form                                   */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+shorten std.{last, assert!, do!}.
+
+namespace derive.idx2inv {
+
+:index (1)
+func params indt-decl, term, term -> term.
+params (parameter ID _ Ty In) T Ti (fun Name Ty Out) :-
+  coq.id->name ID Name,
+  @pi-decl Name Ty p\
+    params (In p) {coq.mk-app T [p]} {coq.mk-app Ti [p]} (Out p).
+params (inductive _ _ Arity _) T Ti (fix `rec` N FixTy FixBo) :- coq.safe-dest-app T (global (indt GR)) _, coq.env.recursive? GR, !,
+  coq.arity->term Arity Ty,
+  compute-fix-ty Ty T Ti N FixTy,
+  compute-fix-clause Ty T Ti N Prove,
+  compute-fix-clause Ty T Ti {calc (N + 1)} Prove1,
+  @pi-decl `rec` Ty f\ Prove f => Prove1 f => compute-fix-bo Ty T Ti (FixBo f).
+params (inductive _ _ Arity _) T Ti Bo :-
+  coq.arity->term Arity Ty,
+  compute-fix-bo Ty T Ti Bo.
+
+func compute-fix-ty term, term, term -> int, term.
+compute-fix-ty (prod N S Tgt) T Ti M (prod N S T1) :- !,
+  @pi-decl N S x\ compute-fix-ty (Tgt x) {coq.mk-app T [x]} {coq.mk-app Ti [x]} J (T1 x), M is J + 1.
+compute-fix-ty _ S T 0 {{ lp:S -> lp:T }}.
+
+func compute-fix-clause term, term, term, int -> (term -> (pred)).
+compute-fix-clause _ S T 1 (ih\ param1-functor-db S T ih) :- !.
+compute-fix-clause (prod N S Tgt) T Ti M (ih\ pi x\ C ih x) :- !,
+  J is M - 1,
+  @pi-decl N S x\ compute-fix-clause (Tgt x) {coq.mk-app T [x]} {coq.mk-app Ti [x]} J (ih\ C ih x).
+
+
+func compute-fix-bo term, term, term -> term.
+compute-fix-bo (prod N S Tgt) T Ti (fun N S T1) :- !,
+  @pi-decl N S x\ compute-fix-bo (Tgt x) {coq.mk-app T [x]} Ti (T1 x).
+compute-fix-bo _ T Ti (fun `x` T B) :-
+  @pi-decl `x` T x\ coq.build-match x T (mk-rty Ti) (mk-branch) (B x).
+
+func mk-rty term, term, list term, list term -> term.
+mk-rty Ti _ Vars _ R :- std.appendR Idxs [_] Vars, !, coq.mk-app Ti Idxs R.
+
+func mk-branch term, term, list term, list term -> term.
+mk-branch K KTy Vars VarsTy R :- std.do! [
+  coq.safe-dest-app K (global (indc GR)) _,
+  coq.safe-dest-app KTy (global (indt I)) IArgs,
+  coq.env.indt I _ _ NP _ _ _,
+  std.split-at NP IArgs Params IDX,
+  Vars = RealArgs,
+  VarsTy = RealArgsTy,
+  assert! (invert-db (indc GR) InvK) "derive.idx2inv: No inverted constructor",
+  coq.mk-app {coq.mk-app (global InvK) Params} IDX K1,
+  (pi H G P\ paramX.prove H G P :- param1-functor-db H G P) =!=>
+  (pi X T\ paramX.cross T :- (pi M\stop M :- !, fail) => realiR X T) =!=>
+    paramX.prove-args RealArgs RealArgsTy Args,
+  coq.mk-app K1 Args K2,
+  std.map IDX mk-refl ArgsEq,
+  coq.mk-app K2 ArgsEq R,
+].
+
+func mk-refl term -> term.
+mk-refl E {{ @refl_equal _ lp:E }}.
+
+func main inductive, string -> list (pred).
+main GR Infix [Clause] :- do! [
+  T = global (indt GR),
+  assert! (invert-db (indt GR) (indt GRinv)) "derive.idx2inv: No inverted inductive",
+  Tinv = global (indt GRinv),
+  Name is {coq.gref->id (indt GR)} ^ Infix ^ {coq.gref->id (indt GRinv)},
+
+  coq.env.indt-decl GR D,
+  copy T Tinv => params D T Tinv R,
+
+  std.assert-ok! (coq.typecheck R RT) "derive.idx2inv: illtyped term",
+  coq.env.add-const Name R RT _ C,
+
+  Clause = idx2inv-db GR GRinv C C,
+  coq.elpi.accumulate _ "derive.idx2inv.db" (clause _ _ Clause)
+].
+
+}
+
+% vim: set spelllang=:

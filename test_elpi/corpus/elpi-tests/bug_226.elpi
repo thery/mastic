@@ -1,0 +1,15 @@
+
+data term.
+symb fun (term -> term) -> term.
+pred f -> (term -> term), term.
+f R (fun d\ R d).
+%f R N :- N = (fun d\ R d).
+
+
+pred foo -> (term -> term), term.
+foo R N :-
+  pi d\
+    f R N.
+
+main :-
+  foo R N, N == fun x\R x.

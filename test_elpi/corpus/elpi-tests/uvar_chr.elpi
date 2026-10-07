@@ -1,0 +1,32 @@
+
+data term.
+symb app term -> term -> term.
+symb lam (term -> term) -> term.
+
+pred unsafe-cast -> A, B.
+:untyped unsafe-cast X X.
+
+pred mk-app term, list term -> term.
+mk-app HD [] HD :- !.
+mk-app (uvar as K) [A|Args] R :- !, unsafe-cast K K', mk-app (K' A) Args R.
+mk-app HD [X|XS] T :- mk-app (app HD X) XS T.
+
+pred copy term -> term.
+
+copy (app A B) (app A1 B1) :- copy A A1, copy B B1.
+copy (lam F) (lam F1) :- pi x\ copy x x => copy (F x) (F1 x).
+copy (uvar F L as X) T :- var X, !, copy-list L L1, mk-app F L1 T.
+copy (uvar C L) (uvar C L1) :- copy-list L L1.
+
+pred copy-list list term -> list term.
+copy-list [] [].
+copy-list [X|XS] [Y|YS] :- copy X Y, copy-list XS YS.
+
+func meta-copy term -> term.
+constraint meta-copy {
+  rule (meta-copy I O) | (copy I X) <=> (O = X).
+}
+
+main :- In = (lam x\ F x),
+  copy In T, print T,
+  declare_constraint (meta-copy In S) [], print S, not(var S).

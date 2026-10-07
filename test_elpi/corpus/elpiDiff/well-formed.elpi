@@ -1,0 +1,183 @@
+% well-formed.elpi — the supported language, as a judgment that returns a diagnostic.
+%
+% `well-formed F D`: D is `ok` when the function F, in L1, is typed and stays
+% within what the transformations support; otherwise D is `error Reason`. Code
+% generation only ever runs on well-formed functions, so refusing is a value
+% with a reason, never a failure halfway through. That operations apply to
+% atoms is not checked here: L1 cannot express anything else.
+
+shorten adjudge.{ operation1, operation2, unary-name, binary-name, argument, written-role, varied-role, declarations }.
+
+namespace adjudge {
+
+% Typing: `of A Ty`. A bound variable gets its clause when its binder is opened.
+func of atom -> ty.
+of (a-num _) real :- !.
+of (a-nat _) integer :- !.
+
+% Where a body sits, since some constructs are only supported in some places.
+kind place type.
+type top         place.                  % the body of the function
+type in-branch   place.                  % a branch of an ite
+type scalar-body place.                  % the body of a map or of a scalar fold
+type array-body  atom -> atom -> place.  % the body of an in-place fold: its index and its state
+
+func written -> atom.                     % the argument a `writes` function stores into, a real or an array
+
+func well-formed afunction bare -> diagnostic.
+well-formed (a-function _ Def) D :-
+  declarations Def Decls,
+  if (non-real-varied Decls N)
+     (M is "`" ^ N ^ "` is independent or inout: only a real or an array of reals carries a derivative", D = error M)
+     (well-formed-definition Decls Def D).
+
+% non-real-varied Decls N: N is the first argument of Decls that is independent
+% or inout but neither a real nor an array: it would carry no derivative.
+func non-real-varied list decl -> string.
+non-real-varied [decl N T R | _] N :- varied-role R, not (T = real ; T = array _), !.
+non-real-varied [_ | Decls] N :- non-real-varied Decls N.
+
+% Opening the definition: an argument has a type, and a name and a role for the diagnostics.
+func well-formed-definition list decl, adefinition bare -> diagnostic.
+well-formed-definition Decls (a-arg N T R F) D :- !,
+  pi x\ [of x T, argument x N R] =!=> well-formed-definition Decls (F x) D.
+well-formed-definition Decls (a-body Result Body) D :- well-formed-result Decls Result Body D.
+
+func well-formed-result list decl, aresult, anf bare -> diagnostic.
+well-formed-result Decls (a-returns real) Body D :- !,
+  if (std.exists! Decls written-decl)
+     (D = error "a function that returns a real cannot declare a dependent or inout argument")
+     (typecheck top Body T D0,
+      if (D0 = ok)
+         (if (T = real) (D = ok) (D = error "the body must compute a real"))
+         (D = D0)).
+well-formed-result _ (a-returns _) _ (error "a function can only return a real") :- !.
+well-formed-result Decls (a-writes Y) Body D :-
+  if (argument Y N Role, written-role Role, of Y Ty)
+     (std.filter Decls written-decl Written,
+      if (not (Written = [_]))
+         (D = error "a function writes a single dependent or inout argument")
+      (if (not (Ty = real ; Ty = array _))
+         (D = error "only a real or an array of reals can be written")
+         ((written Y =!=> typecheck top Body T D0),
+          if (D0 = ok)
+             (if (not (T = Ty))
+                 (D = error "the body must compute the argument it writes")
+              (if (Role = dependent, occurs Y Body)
+                 (M is "`" ^ N ^ "` is declared dependent but the body reads it: an argument read then written is inout", D = error M)
+              (if (Role = inout, not (occurs Y Body))
+                 (M is "`" ^ N ^ "` is declared inout but the body never reads it: an argument only written is dependent", D = error M)
+                 (D = ok))))
+             (D = D0))))
+     (D = error "a function can only write a dependent or inout argument").
+
+% typecheck P B Ty D: in place P, the body B has type Ty, or D explains why not.
+func typecheck place, anf bare -> ty, diagnostic.
+typecheck P (a-let _ E B) T D :- !,
+  if (B = (x\ a-ret x)) (Tail = tt) (Tail = ff),
+  typecheck-value P Tail E TE D0,
+  if (D0 = ok) (pi x\ of x TE =!=> typecheck P (B x) T D) (D = D0).
+typecheck _ (a-ret X) T D :-
+  if (of X T0)
+     (T = T0,
+      if (T0 = array _, argument X NX _, not (written X))
+         (M is "`" ^ NX ^ "` is an argument: an array the function computes must be built, by a map or an in-place loop, not taken from another argument", D = error M)
+         (D = ok))
+     (D = error "an atom is not bound").
+
+func typecheck-value place, bool, value bare -> ty, diagnostic.
+typecheck-value _ _ (a-op1 F A) T D :- !,
+  unary-name F S,
+  if (not (operation1 F _ _ _))
+     (M is "`" ^ S ^ "` is not an elementary operation: no partial derivative is known for it", D = error M)
+  (if (of A TA, operation1 F TA T0 _)
+     (T = T0, D = ok)
+     (M is "`" ^ S ^ "` is applied to an operand of the wrong type", D = error M)).
+typecheck-value _ _ (a-op2 F A B) T D :- !,
+  binary-name F S,
+  if (not (operation2 F _ _ _ _))
+     (M is "`" ^ S ^ "` is not an elementary operation: no partial derivative is known for it", D = error M)
+  (if (of A TA, of B TB, operation2 F TA TB T0 _)
+     (T = T0, D = ok)
+     (M is "`" ^ S ^ "` is applied to operands of the wrong types", D = error M)).
+typecheck-value _ _ (a-get A I) real D :- !,
+  if (of A (array _), of I integer) (D = ok) (D = error "a[i] needs an array and an integer index").
+typecheck-value (array-body Index State) tt (a-set A I V) (array N) D :-
+  same_term A State, of A (array N), of V real, (same_term I Index ; I = a-nat _), !, D = ok.
+typecheck-value _ _ (a-set _ _ _) real (error "an array update must end the body of a fold on that array, at the loop index") :- !.
+typecheck-value (array-body _ _) _ (a-ite _ _ _) real (error "a branch inside an in-place loop is not supported") :- !.
+typecheck-value _ _ (a-ite C Then Else) T D :- !,
+  if (of C boolean)
+     (typecheck in-branch Then T1 D1, typecheck in-branch Else T2 D2,
+      if (D1 = ok) (if (D2 = ok) (if (T1 = real, T2 = real) (T = real, D = ok) (D = error "both branches must compute a real")) (D = D2)) (D = D1))
+     (D = error "a branch condition must be a comparison").
+typecheck-value top tt (a-map (a-nat L) (a-nat H) B) (array N) D :- !,
+  N is H - L,
+  if (not (L = 0))
+     (D = error "a map starts at index 0")
+  (if (written Y, argument Y NY inout)
+     (M is "`" ^ NY ^ "` is inout: a map computes the whole array, so the argument it writes is dependent", D = error M)
+  (if (written Y, pi i\ occurs Y (B i))
+     (argument Y NY _, M is "`" ^ NY ^ "` is the array the loop writes: a map cannot read it", D = error M)
+     (pi i\ of i integer =!=> typecheck scalar-body (B i) T D0,
+      if (D0 = ok) (if (T = real) (D = ok) (D = error "a map must compute reals")) (D = D0)))).
+typecheck-value _ _ (a-map _ _ _) real (error "a map must end the function, with integer literal bounds, writing its output") :- !.
+typecheck-value P Tail (a-fold _ Lo Hi Init B) T D :-
+  if (of Lo integer, of Hi integer)
+     (if (of Init real)
+        (if (P = top)
+           (T = real, pi i\ pi s\ [of i integer, of s real] =!=> typecheck scalar-body (B i s) T1 D0,
+            if (D0 = ok) (if (T1 = real) (D = ok) (D = error "a scalar recurrence must compute a real")) (D = D0))
+           (T = real, D = error "a scalar recurrence inside a loop body or a branch is not supported"))
+     (if (of Init (array N), in-place-init P Tail Init)
+        (T = array N,
+         if (pi i\ pi s\ occurs Init (B i s))
+            (if (argument Init NY _)
+               (M is "`" ^ NY ^ "` is the array before the loop that updates it in place: inside that loop, read its current version, the loop state", D = error M)
+               (D = error "an in-place loop nested in another cannot read the state of the outer one: read its own state"))
+            (pi i\ pi s\ [of i integer, of s (array N)] =!=> typecheck (array-body i s) (B i s) T1 D0,
+         if (D0 = ok)
+            (if (T1 = array N)
+               (if (pi i\ pi s\ reads-around-inner-loop s (B i s))
+                  (D = error "an in-place loop that contains another one cannot read the array itself")
+                  (D = ok))
+               (D = error "an in-place loop must compute the next version of its array"))
+            (D = D0)))
+        (T = real, D = error "a fold carries a real, or updates in place the array the function writes")))
+     (T = real, D = error "loop bounds must be integers").
+
+% An in-place fold starts from the written argument at the end of the function,
+% or from the state of the enclosing in-place fold at the end of its body.
+func in-place-init place, bool, atom.
+in-place-init top tt Init :- written Init, !.
+in-place-init (array-body _ State) tt Init :- same_term Init State.
+
+func written-decl decl.
+written-decl (decl _ _ R) :- written-role R.
+
+% type-of E T: the type of a value in a well-formed body, annotated or not.
+func type-of value I -> ty.
+type-of (a-op1 F A) T :- !, of A TA, operation1 F TA T _.
+type-of (a-op2 F A B) T :- !, of A TA, of B TB, operation2 F TA TB T _.
+type-of (a-get _ _) real :- !.
+type-of (a-set A _ _) T :- !, of A T.
+type-of (a-ite _ _ _) real :- !.
+type-of (a-map (a-nat L) (a-nat H) _) (array N) :- !, N is H - L.
+type-of (a-fold _ _ _ I _) T :- of I T.
+
+% reads-around-inner-loop S B: B ends with an inner in-place loop, and reads the
+% state S before it. Replaying that read in the reverse sweep would see the
+% values the inner loop has not restored yet.
+func reads-around-inner-loop atom, anf bare.
+reads-around-inner-loop S B :- ends-with-fold B, reads-before-tail S B.
+
+func ends-with-fold anf bare.
+ends-with-fold (a-let _ (a-fold _ _ _ _ _) (x\ a-ret x)) :- !.
+ends-with-fold (a-let _ _ B) :- pi x\ ends-with-fold (B x).
+
+func reads-before-tail atom, anf bare.
+reads-before-tail _ (a-let _ _ (x\ a-ret x)) :- !, fail.
+reads-before-tail S (a-let _ E _) :- occurs S E, !.
+reads-before-tail S (a-let _ _ B) :- pi x\ reads-before-tail S (B x).
+
+}

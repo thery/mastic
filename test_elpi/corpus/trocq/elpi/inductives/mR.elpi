@@ -1,0 +1,196 @@
+accumulate "Trocq.Elpi.inductives/common_algo".
+accumulate "Trocq.Elpi.inductives/utils".
+accumulate "Trocq.Elpi.inductives/injection_lemmas".
+accumulate "elpi.apps.derive.elpi/discriminate".
+
+shorten derive.common-algo.{mk-mR-type-mR}.
+shorten derive.algo-utils.{cmp-indt}.
+
+namespace derive.mR {
+
+% Given Y and Bo: x\ y\ RT. The return type of the match on X is: substituting the binder of X in the match.
+pred rty-1 i:(term -> term -> term), i:term , i:term, i: list term, i: list term, o:term.
+rty-1 Bo Y _ Ts _ R :-
+  std.last Ts X,
+  R = Bo X Y.
+
+% Given X and Bo: x\ y\ RT. The return type of the match on Y is: substituting the binder of Y in the match.
+pred rty-2 i:(term -> term -> term), i:term , i:term, i: list term, i: list term, o:term.
+rty-2 Bo X _ Ts _ R :-
+  std.last Ts Y,
+  R = Bo X Y.
+
+pred sub-branch i:term, i:int, i: term, i:list term, i:list term, i:term, i:list term, i:list term,
+    i:(term -> term -> term), o:term.
+sub-branch YTy TyParamNo K1 Args1 ArgTys1 K2 Args2 ArgTys2 Bo (fun `e` ETy e\ (R e)):-
+  coq.mk-app K1 Args1 X,
+  coq.mk-app K2 Args2 Y,
+  BoXY = Bo X Y,
+  coq.elaborate-skeleton BoXY _ BoXYE ok,
+  !,
+  BoXYE = prod _ ETy G,
+  whd K1 [] Constr1 TypeArgs1,
+  whd K2 [] Constr2 TypeArgs2,
+  @pi-decl `e` ETy e\
+    matrix YTy TyParamNo Constr1 TypeArgs1 Args1 ArgTys1 Constr2 TypeArgs2 Args2 ArgTys2 e ETy (G e) (R e).
+
+% Each branch matches on Y as Y0, returning a term of type (Bo (K KArgs) Y0) given by matrix.
+pred mkBranch i:int, i:(term -> term -> term), i:term, i:term, i:term, i:term, i:list term, i:list term, o:term.
+mkBranch TyParamNo Bo Y YTy K _ Ts TYs R :-
+  !,
+  coq.mk-app K Ts X,
+  coq.build-match Y YTy (rty-2 Bo X)
+    (k2\ _\ ts\ tys\
+      sub-branch YTy TyParamNo K Ts TYs k2 ts tys Bo)
+         R.
+
+pred build-mRA-ty-args i:list term, i:list term, i:term, o:term.
+build-mRA-ty-args [] [] R R.
+build-mRA-ty-args [ATy1| ArgsTy1] [ATy2| ArgsTy2] MR R :-
+  ar-db ATy1 ATy2 AR,
+  coq.mk-app MR [ATy1, ATy2, AR] NewMR,
+  build-mRA-ty-args ArgsTy1 ArgsTy2 NewMR R.
+
+% TODO update: this considers that type arguments come in Ts, they don't come in there.
+pred build-mRA i:term, i:term, i:term, i:term, o:term.
+build-mRA IndTy ATy1 ATy2 _ R :-
+  cmp-indt ATy1 IndTy IndS Ind,
+  cmp-indt ATy2 IndTy IndD Ind,
+  coq.safe-dest-app ATy1 _ ArgsTy1,
+  coq.safe-dest-app ATy2 _ ArgsTy2,
+  mR-db IndS IndD MR,
+  % TODO: change following line to implement non uniform parameters + definition of the fix.
+  if (IndS = Ind)
+    (R = MR)
+    (build-mRA-ty-args ArgsTy1 ArgsTy2 MR R).
+
+pred build-injEKJ-args i:int, i:list term, i:list term,
+                      i:term, i:term, o:term.
+% applies TyParamNo time the Type parameter of the return Inductive.
+build-injEKJ-args 0 Args1 Args2 InjKJ E R :-
+  app-interleave InjKJ Args1 Args2 InjKJArgs,
+  coq.mk-app InjKJArgs [E] R.
+build-injEKJ-args N [_ | ATys1] [ATy2|ATys2] InjKJ E R :-
+  M is N - 1,
+  coq.mk-app InjKJ [ATy2] InjKJA,
+  build-injEKJ-args M ATys1 ATys2 InjKJA E R.
+
+pred app-interleave i:term, i:list term, i:list term, o:term.
+app-interleave R [] [] R.
+app-interleave F [A|Args1] [B|Args2] R :-
+  coq.mk-app F [A, B] NewF,
+  app-interleave NewF Args1 Args2 R.
+
+pred build-injEKJ i:int, i:term, i:term, i:term, i:int o: term.
+build-injEKJ TyParamNo E ETy K J R :-
+  injections-db K J InjKJ,
+  whd ETy [] {{lib:@trocq.paths}} [_,A,B],
+  whd A [] KA ArgsL,
+  whd B [] KB ArgsR,
+  coq.env.global (indc _) KA,
+  coq.env.global (indc _) KB,
+  build-injEKJ-args TyParamNo ArgsL ArgsR InjKJ E InjEKJ,
+  coq.elaborate-skeleton InjEKJ _ R _.
+
+% TODO: for processing params extend with an int of param no + db Type Type AR.
+% TODO: for processing contained types, lookup mR-db apply arg1 arg2 + the ith constructor injection of the equality.
+pred apply-indR i:term, i:int, i:int, i:term, i:term, i:list term, i:list term, i:list term, i:list term, i:list term, i:list term, i:term, i:term, i:term, i:term, i:int, o: term.
+% N J K KR K1Args K1Tys K2Args K2Tys X Y E TyParamNo
+apply-indR _ 0 _ _ KR [] [] [] [] [] [] _ _ _ _ _ KR.
+% for the jth argument provide A1 A2 AR12
+% For AR12 we bring mR_ATy ATyArgs1 ATyArgs2 ARs
+% For the equality we bring injectionKJ TyArgs2 (Args1 of the eq) (Args2 of the eq)
+apply-indR YTy 0 J K KR [] [A1|Args1] [ATy1|ArgTys1] [] [A2|Args2] [ATy2| ArgTys2] LHS RHS E ETy TyParamNo R :-
+  Jn is J + 1,
+  build-mRA YTy ATy1 ATy2 LHS MRA,
+  build-injEKJ TyParamNo E ETy K J InjEKJ,
+  coq.mk-app MRA [A1,A2,InjEKJ] A12R,
+  coq.mk-app KR [A1,A2, A12R] KA12AR,
+  apply-indR YTy 0 Jn K KA12AR [] Args1 ArgTys1 [] Args2 ArgTys2 LHS RHS E ETy TyParamNo R.
+apply-indR YTy N J K KR [Ty1|TyArgs1] Args1 ArgTys1 [Ty2|TyArgs2] Args2 ArgTys2 LHS RHS E ETy TyParamNo R :-
+  M is N - 1,
+  ar-db Ty1 Ty2 AR,
+  coq.mk-app KR [Ty1, Ty2, AR] NewKR,
+  apply-indR YTy M J K NewKR TyArgs1 Args1 ArgTys1 TyArgs2 Args2 ArgTys2 LHS RHS E ETy TyParamNo R.
+
+% On the diagonal return KR a1 a2 ...
+% Outside the diagonal discriminate
+pred matrix
+    i: term,
+    i:int, i: term, i:list term, i:list term, i:list term, i:term, i:list term, i:list term, i:list term,
+    i:term, i:term, i:term, o:term.
+matrix YTy TyParamNo K1 TyArgs1 KArgs1 ArgTys1 K2 TyArgs2 KArgs2 ArgTys2 E ETy _ R :-
+  coq.env.global (indc K) K1,
+  coq.env.global (indc K) K2,
+  !,
+  param K1 K1 KR,
+  coq.mk-app K1 {std.append TyArgs1 KArgs1} LHS,
+  coq.mk-app K2 {std.append TyArgs2 KArgs2} RHS,
+  apply-indR YTy TyParamNo 1 K1 KR TyArgs1 KArgs1 ArgTys1 TyArgs2 KArgs2 ArgTys2 LHS RHS E ETy TyParamNo R.
+
+matrix _ _ _ _ _ _ _ _ _ _ E ETy G R :- !,
+  ltac.discriminate E ETy G R.
+
+pred implement-mR i:int, i:int, i:term, o:term.
+% all TyParams processed,
+% remains forall (i1: I Args1) (i2 : I Args2), map -> IR
+% Bo is i1\ i2\               mapI Args1 Args2 ARs i1 = i2 -> IR Args1i Args2i ARsi i1 i2.
+% todo: Carry the list of TyArgs, needed for apply-ind params.
+implement-mR 0 TyParamNo (prod I1 I1Ty i1\ prod I2 I2Ty i2\ (Bo i1 i2)) (fix `f` 0 RT f\ fun I1 I1Ty i1\ fun I2 I2Ty i2\ (R f i1 i2)) :-
+  coq.safe-dest-app I2Ty Ind _,
+  coq.env.global (indt GR) Ind,
+  coq.env.recursive? GR, !,
+  RT = (prod I1 I1Ty i1\ prod I2 I2Ty i2\ (Bo i1 i2)),
+  @pi-decl `f` RT f\
+  @pi-decl I1 I1Ty i1\
+  @pi-decl I2 I2Ty i2\
+    % TODO: I'm a bug fix me
+    mR-db Ind Ind f =>
+    coq.build-match i1 I1Ty (rty-1 Bo i2) (mkBranch TyParamNo Bo i2 I2Ty) (R f i1 i2).
+implement-mR 0 TyParamNo (prod I1 I1Ty i1\ prod I2 I2Ty i2\ (Bo i1 i2)) (fun I1 I1Ty i1\ fun I2 I2Ty i2\ (R i1 i2)) :-
+  @pi-decl I1 I1Ty i1\
+  @pi-decl I2 I2Ty i2\
+    !, coq.build-match i1 I1Ty (rty-1 Bo i2) (mkBranch TyParamNo Bo i2 I2Ty) (R i1 i2).
+implement-mR N TyParamNo (prod A1 A1Ty a1\ prod A2 A2Ty a2\ prod AR (ARTy a1 a2) ar\ prod AM (AMTy a1 a2 ar) am\ (Bo a1 a2 ar am))
+                         (fun  A1 A1Ty a1\  fun A2 A2Ty a2\  fun AR (ARTy a1 a2) ar\ fun AM (AMTy a1 a2 ar) am\ (R a1 a2 ar am)) :-
+  M is N - 1,
+  @pi-decl A1 A1Ty a1\
+  @pi-decl A2 A2Ty a2\
+  @pi-decl AR (ARTy a1 a2) ar\
+  @pi-decl AM (AMTy a1 a2 ar) am\
+    % todo: fix me: universes
+    Map = pglobal {{:gref lib:trocq.map1.map }} _ ,
+    coq.mk-app Map [a1,a2,ar,am] (PMapA a1 a2 ar am),
+    % insert coercions
+    coq.elaborate-skeleton (PMapA a1 a2 ar am) _ (MapA a1 a2 ar am) ok,
+    MR = pglobal {{:gref lib:trocq.map2a.map_in_r }} _,
+    coq.mk-app MR [a1,a2,ar,am] (PMR a1 a2 ar am),
+    coq.elaborate-skeleton (PMR a1 a2 ar am) _ (MRA a1 a2 ar am) ok,
+    mymap-db A1Ty A2Ty (MapA a1 a2 ar am) ==>
+    mR-db a1 a2 (MRA a1 a2 ar am) ==>
+    % todo: check usage of ar-db in mR
+    ar-db a1 a2 ar ==>
+    implement-mR M TyParamNo (Bo a1 a2 ar am) (R a1 a2 ar am).
+
+
+func main inductive, string -> list prop.
+main GR Prefix Clauses :- std.do! [
+  Name is Prefix ^ "mR",
+  coq.env.indt GR _ UnifParamNo _ _ _ _,
+  coq.env.global (indt GR) Ind,
+  param Ind Ind TR,
+  coq.typecheck TR TRTy ok,
+  mymap-def (indt GR) IndMapGR,
+  mk-mR-type-mR UnifParamNo TRTy {coq.env.global IndMapGR} {{ Type }} TR MRTy,
+  std.assert-ok! (coq.elaborate-skeleton MRTy _ MRTyE) "derive.mR generates illtyped type",
+  implement-mR UnifParamNo UnifParamNo MRTyE T,
+  std.assert-ok! (coq.elaborate-skeleton T MRTyE TE) "derive.mR generates illtyped term",
+  coq.ensure-fresh-global-id Name FName,
+  coq.env.add-const FName TE MRTyE _ C,
+  Clauses = [mR-done GR, mR-def (indt GR) (const C)],
+  std.forall Clauses (x\
+    coq.elpi.accumulate _ "derive.mR.db" (clause _ _ x)
+  ),
+].
+
+}

@@ -1,0 +1,95 @@
+/* equality test soundness proof                                             */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+
+func feqb.trm->term eqb.trm -> term.
+
+macro @pi-trm N T F :-
+  pi x xx\ decl x N T => (feqb.trm->term xx x :- !) => F xx x.
+
+namespace derive.eqbOK {
+
+:index (1)
+func add-reflect eqb.eqType, term, term -> term.
+add-reflect (eqb.type-param F) Correct Refl {{
+     fun (a : lp:Type) (eqA: a -> a -> bool) (heqA : lp:(HeqA a eqA)) => lp:(R a eqA heqA)
+  }} :-
+  Type = sort (typ {coq.univ.new}),
+  HeqA = (a\eqA\ {{ forall x1 x2 : lp:a, lib:elpi.reflect (@eq lp:a x1 x2) (lp:eqA x1 x2) }}),
+  @pi-trm `a` Type aa\a\
+  @pi-decl `eqA` {{ lp:a -> lp:a -> bool }} eqA\
+  @pi-decl `heqA` (HeqA a eqA) heqA\
+  add-reflect (F aa)
+    {{lp:Correct lp:a lp:eqA (fun (a1 a2 : lp:a) => @elimT (@eq lp:a a1 a2) (lp:eqA a1 a2) (lp:heqA a1 a2))}}
+    {{lp:Refl lp:a lp:eqA (fun (a1: lp:a) => @introT (@eq lp:a a1 a1) (lp:eqA a1 a1) (lp:heqA a1 a1) (@refl_equal lp:a a1))}}
+    (R a eqA heqA).
+add-reflect (eqb.value-param TY F) Correct Refl  {{ fun x : lp:Ty => lp:(R x) }} :-
+  feqb.trm->term TY Ty,
+  @pi-trm `x` Ty xx\x\
+  add-reflect (F xx)
+    {{lp:Correct lp:x}}
+    {{lp:Refl lp:x}}
+    (R x).
+add-reflect (eqb.inductive _ _) Correct Refl {{iffP2 lp:Correct lp:Refl}}.
+
+pred add-sumbool eqb.eqType, term -> term.
+add-sumbool (eqb.type-param F) Reflect {{
+     fun (a : lp:Type) (heqA : lp:(HeqA a)) => lp:(R a heqA)
+  }} :-
+  Type = sort (typ {coq.univ.new}),
+  HeqA = (a\ {{ forall x1 x2 : lp:a, { @eq lp:a x1 x2 } + { ~ (@eq lp:a x1 x2) } }}),
+  @pi-trm `a` Type aa\a\
+  @pi-decl `heqA` (HeqA a) heqA\
+  add-sumbool (F aa)
+    {{lp:Reflect lp:a (eqb_of_dec lp:a lp:heqA) (dec_reflect lp:a lp:heqA) }}
+    (R a heqA).
+add-sumbool (eqb.value-param TY F) Reflect  {{ fun x : lp:Ty => lp:(R x) }} :-
+  feqb.trm->term TY Ty,
+  @pi-trm `x` Ty xx\x\
+  add-sumbool (F xx)
+    {{lp:Reflect lp:x}}
+    (R x).
+add-sumbool (eqb.inductive _ _) Reflect {{reflect_dec _ _ lp:Reflect}}.
+
+func main gref, string -> list (pred).
+main (indt I) Prefix [CL] :- std.do! [
+  std.assert! (eqType (indt I) FI) "this inductive is not supported",
+  std.assert! (eqcorrect-for (indt I) Correct Refl) "run eqbcorrect before",
+
+  add-reflect FI (global (const Correct)) (global (const Refl)) Breflect,
+
+  std.assert-ok! (coq.typecheck Breflect Treflect) "eqbOK generates illtyped term", 
+  coq.ensure-fresh-global-id (Prefix ^ "eqb_OK") Namerf,
+  coq.env.add-const Namerf Breflect Treflect @opaque! Reflect,
+
+
+  add-sumbool FI (global (const Reflect)) Breflect_sb,
+  std.assert-ok! (coq.typecheck Breflect_sb Treflect_sb) "eqbOK generates illtyped term", 
+  coq.ensure-fresh-global-id (Prefix ^ "eqb_OK_sumbool") Namerf_sb,
+  coq.env.add-const Namerf_sb Breflect_sb Treflect_sb @opaque! Reflect_sb,
+
+  CL = eqbok-for (indt I) Reflect,
+
+  coq.elpi.accumulate _ "derive.eqbOK.db" (clause _ _ CL),
+
+  coq.register (const Reflect_sb) (coq.register.scheme (indt I) coq.register.scheme.eq_dec),
+
+].
+main (const C) Prefix [CL] :- std.do! [
+  std.assert! (eqb-for (global (const C)) (global (const C)) F) "run eqb before",
+  std.assert! (eqcorrect-for (const C) Correct Refl) "run eqbcorrect before",
+  add-reflect (eqb.inductive _ _) (global (const Correct)) (global (const Refl)) Breflect,
+
+  std.assert-ok! (coq.typecheck Breflect _) "eqbOK generates illtyped term", 
+  coq.ensure-fresh-global-id (Prefix ^ "eqb_OK") Namerf,
+  X = (global (const C) : term),
+  coq.env.add-const Namerf Breflect {{ forall a b : lp:X, lib:elpi.reflect (@eq lp:X a b) (lp:F a b) }} @opaque! Reflect,
+  CL = eqbok-for (const C) Reflect,
+  coq.elpi.accumulate _ "derive.eqbOK.db" (clause _ _ CL),
+  coq.elpi.accumulate _ "derive.eqType.db" (clause _ _ (eqType (const C) eqb.axiom)),
+
+].
+main (indc _) _ _ :- stop "cannot call eqbOK on a constructor".
+
+}

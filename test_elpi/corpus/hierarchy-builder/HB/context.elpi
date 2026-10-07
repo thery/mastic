@@ -1,0 +1,82 @@
+/*        Hierarchy Builder: algebraic hierarchies made easy
+    This software is released under the terms of the MIT license              */
+
+namespace context {
+
+pred declare i:factories, o:mixins, o:list term, o:term, o:list prop, o:list constant.
+declare FLwP MLwP Params TheKey MSL CL :- !, std.do! [
+  factories-provide FLwP MLwPRaw,
+  declare.params-key MLwPRaw ParamsSection TheKey _MLwA,
+  std.map ParamsSection triple_2 Params,
+  declare.mixins TheKey ParamsSection MLwPRaw MLwP MSL CL
+].
+
+func declare.params-key w-params A -> list (triple id term term), term, A.
+declare.params-key MLwP Params TheKey Out :- !, std.do! [
+  if-verbose (coq.say {header} "declaring parameters and key as section variables"),
+  declare.params MLwP Params KId KTy F,
+  log.coq.env.add-section-variable-noimplicits KId KTy C,
+  TheKey = global (const C),
+  Out = F TheKey
+].
+
+pred declare.params i:w-params A, o:list (triple id term term), o:id, o:term, o:(term -> A).
+declare.params (w-params.cons PId PTy F) [triple PId P PTy|Params] KId KTy Out :- !, std.do! [
+  log.coq.env.add-section-variable-noimplicits PId PTy C,
+  P = global (const C),
+  declare.params (F P) Params KId KTy Out
+].
+declare.params (w-params.nil KId KTy F) [] KId KTy F :- !.
+
+% [declare.mixins TheType Parameters Factories Clauses] postulates a
+% (section) context with all the mixins provided by the factories and all
+% the structure instances we can derive on TheType from these. Clauses
+% contain mixin-src for each postulated mixin
+:index (1)
+func declare.mixins term, list (triple id term term), mixins -> mixins, list prop, list constant.
+declare.mixins TheType TheParamsSection MLwPRaw MLwP MSL CL :-  std.do! [
+  if-verbose (coq.say "Here is the list of mixins to declare (the order matters): "
+    {list-w-params_list MLwPRaw}),
+  std.map TheParamsSection triple_2 TheParams,
+  apply-w-params MLwPRaw TheParams TheType MLwAllArgsRaw,
+  std.fold MLwAllArgsRaw (triple [] [] []) (private.postulate-mixin TheType) (triple CL MSL MLwPRev),
+  acc-clauses current {std.map CL (cs\r\ r = local-canonical cs)},
+  std.rev MLwPRev MLwPSection,
+  build-list-w-params TheParamsSection TheType MLwPSection MLwP,
+  acc-clauses current MSL,
+].
+
+/* ------------------------------------------------------------------------- */
+/* ----------------------------- private code ------------------------------ */
+/* ------------------------------------------------------------------------- */
+
+namespace private {
+
+% Given a type T, a fresh number N, and a mixin M it postulates
+% a variable "mN" inhabiting M applied to T and
+% all its dependencies, previously postulated and associated
+% to the corresponding mixin using mixin-for
+:index (1)
+func postulate-mixin term, w-args mixinname, triple (list constant) (list prop) (list (w-args mixinname))
+                     -> triple (list constant) (list prop) (list (w-args mixinname)).
+postulate-mixin TheType (triple M Ps T) (triple CL MSL MLwP) (triple OutCL [MC|MSL] [NewMwP|MLwP]) :- MSL => std.do! [
+  Name is "local_mixin_" ^ {gref->modname M 2 "_"},
+
+  if-verbose (coq.say "HB: postulate" Name "on" {coq.term->string T}),
+  
+  synthesis.infer-all-gref->deps Ps T M TySkel,
+  % was synthesis.infer-all-mixin-args Ps T M TySkel,
+  % if-verbose (coq.say "HB: postulate-mixin checking" TySkel),
+  % std.assert-ok! (coq.typecheck Ty _) "postulate-mixin: Ty illtyped",
+  std.assert-ok! (coq.elaborate-ty-skeleton TySkel _ Ty)
+    "postulate-mixin: Ty illtyped",
+  log.coq.env.add-section-variable-noimplicits Name Ty C,
+  factory? Ty NewMwP,
+
+  MC = mixin-src T M (global (const C)),
+  MC => get-option "local" tt =>
+    instance.declare-all TheType {findall-classes-for [M]} NewCSL,
+  std.map NewCSL snd NewCL,
+  std.append CL NewCL OutCL
+  ].
+}}

@@ -1,0 +1,97 @@
+/* A lens, to see better                                                     */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+namespace derive.lens {
+
+:index (1 2)
+func build-lens record-decl, list (option constant), int, term -> list (pair id constant), list term.
+build-lens end-record [] _ _ [] [].
+build-lens (field _ _ _ Fields) [none|Projs] N RTy IDL BOL :-
+   if (pi x\ occurs x (Fields x))
+     (stop "derive.lens: dependent records not supported")
+     true,
+  M is N + 1,
+  Dummy = sort prop,
+  build-lens (Fields Dummy) Projs M RTy IDL BOL.
+
+build-lens (field _ ID Ty Fields) [some P|Projs] N RTy [pr ID P|IDL] [Lens|BOL] :-
+  if (pi x\ occurs x (Fields x))
+     (stop "derive.lens: dependent records not supported")
+     true,
+
+  View = {{ fun (r : lp:RTy) => lp:{{                            % Coq term
+    {coq.build-match {{r}} RTy (constant-rty Ty) (build-view N)} % Elpi "function" to build a match, see coq-lib.elpi
+  }} }},
+
+  % we let Coq infer the type of f at type checking time
+  Over = {{ fun f (r : lp:RTy) => lp:{{
+    {coq.build-match {{r}} RTy (constant-rty RTy) (build-over N {{f}})}
+  }} }},
+
+  Lens = {{ lib:@elpi.derive.lens.make _ _ _ _ lp:View lp:Over }},
+
+  M is N + 1,
+  Dummy = sort prop,
+  build-lens (Fields Dummy) Projs M RTy IDL BOL.
+
+% builds the return type of the match
+func constant-rty term,  term, list term, list term -> term.
+constant-rty X _ _ _ X.
+
+% builds the match branch for view, L is the list of arguments to
+% the record constructor
+func build-view int, term, term, list term, list term -> term.
+build-view N    _ _ L _ R :- std.nth N L R.
+
+% builds the match branch for over, K is the record constructor (already
+% applied) to the record parameters
+func build-over int, term, term, term, list term, list term -> term.
+build-over N F  K _ L _ R :-
+  std.split-at N L Before [X|After],
+  coq.mk-app K {std.append Before [{{ lp:F lp:X }}|After]} R.
+
+% moves under the paramters of the inductive type type and binds them back
+% as a lambd abstraction over all the lenses that were built
+:index (1)
+func params indt-decl, list (option constant), term -> list (pair id constant), list term.
+params (parameter ID _ Ty Decl) Projs RTy IL TL :-
+  coq.id->name ID Name,
+  (@pi-decl Name Ty x\ params (Decl x) Projs {coq.mk-app RTy [x]} IL (BL x)),
+  distribute-abstraction Name Ty BL TL.
+params (record _ _ _ RD) Projs RTy IL TL :- build-lens RD Projs 0 RTy IL TL.
+params (inductive ID _ _ _) _ _ _ _ :-
+  M is "derive.lens: " ^ ID ^ " is not a record",
+  stop M.
+
+% distributes a lambda abstraction to all items in the list
+func distribute-abstraction name, term, (term -> list term) -> list term.
+distribute-abstraction _ _ (_\[]) [] :- !.
+distribute-abstraction Name Ty (x\[T x|L x]) [fun Name Ty T|L1] :-
+  distribute-abstraction Name Ty L L1.
+
+% typechecks and declares the lens
+func declare-lens string, inductive, pair id constant, term -> (pred).
+declare-lens Prefix I (pr FieldName Proj) RawBody (lens-db I Proj C):-
+  Name is Prefix ^ FieldName,
+  coq.env.indt I _ Nparams _ _ _ _,
+  % In order to support primitive records we call the elaborator, which
+  % eventually compiles the match into primitive projections
+  std.assert-ok! (coq.elaborate-skeleton RawBody Ty Body) "derive.lens generates illtyped term",
+  ((pi P P1 N\ copy (primitive (proj P N)) (primitive (proj P1 N)) :- coq.primitive.projection-unfolded P1 P, !) => copy Body Body1),
+  coq.env.add-const Name Body1 Ty @transparent! C,
+  std.map {std.iota Nparams} (_\r\ r = maximal) Implicits,
+  if (Nparams > 0)
+    (@global! => coq.arguments.set-implicit (const C) [Implicits, []])
+    true.
+
+func main inductive, string -> list (pred).
+main I Prefix Clauses :- std.do! [
+  coq.env.indt-decl I Decl, % easy to recurse on
+  coq.env.projections I Projs,
+  params Decl Projs (global (indt I)) Names_Projs Defs,
+  std.map2 Names_Projs Defs (declare-lens Prefix I) Clauses,
+  std.forall Clauses (c\coq.elpi.accumulate _ "derive.lens.db" (clause _ _ c)),
+].
+
+}

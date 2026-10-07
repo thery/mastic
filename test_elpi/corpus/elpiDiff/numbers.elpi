@@ -1,0 +1,126 @@
+% numbers.elpi — domains of numbers, for the evaluators.
+%
+% A domain is the record of its operations on its numbers, of some type N:
+% how a literal reads, and how the unary and binary operations and the
+% comparisons of operations.elpi compute. The evaluators take a domain as an
+% argument and are polymorphic in N, so the same evaluator computes with
+% floats, and later with dual numbers (a value and a tangent) or with symbolic
+% reals. Elpi does not let a clause fix the type N of a polymorphic predicate,
+% hence a record of functions rather than one clause per domain.
+%
+% Integers (loop bounds, indices) and booleans are the same in every domain:
+% only the reals vary.
+
+kind domain type -> type.
+type domain
+  (func string -> N) ->                    % a real literal, spelled as in the source: "2", "0.9"
+  (func unary, N -> N) ->                  % a unary operation
+  (func binary, N, N -> N) ->              % a binary arithmetic operation
+  (func binary, N, N -> bool) ->           % a comparison
+  domain N.
+
+namespace adjudge {
+
+func dom-lit domain N, string -> N.
+dom-lit (domain L _ _ _) S X :- L S X.
+
+func dom-op1 domain N, unary, N -> N.
+dom-op1 (domain _ O _ _) F X Y :- O F X Y.
+
+func dom-op2 domain N, binary, N, N -> N.
+dom-op2 (domain _ _ O _) F X Y Z :- O F X Y Z.
+
+func dom-cmp domain N, binary, N, N -> bool.
+dom-cmp (domain _ _ _ C) F X Y B :- C F X Y B.
+
+% --- floats ---------------------------------------------------------------------
+% The C++ doubles, computed with Elpi's floats (OCaml's, hence the C library's).
+
+func floats -> domain float.
+floats (domain float-lit float-op1 float-op2 float-cmp).
+
+% A literal is a number, or the quotient of two numbers ("13.0 / 12.0"), a
+% constant expression of C++ computed, as in C++, in floating point.
+func float-lit string -> float.
+float-lit S X :- rex.split " */ *" S [A, B], !, X is string_to_real A / string_to_real B.
+float-lit S X :- X is string_to_real S.
+
+func float-op1 unary, float -> float.
+float-op1 neg X Y :- !, Y is ~ X.
+float-op1 sin X Y :- !, Y is sin X.
+float-op1 cos X Y :- !, Y is cos X.
+float-op1 exp X Y :- !, Y is fexp X.
+float-op1 log X Y :- !, Y is ln X.
+float-op1 sqrt X Y :- !, Y is sqrt X.
+float-op1 (pow K) X Y :- Y is pow X (int_to_real K).
+
+func float-op2 binary, float, float -> float.
+float-op2 add X Y Z :- !, Z is X + Y.
+float-op2 sub X Y Z :- !, Z is X - Y.
+float-op2 mul X Y Z :- !, Z is X * Y.
+float-op2 divide X Y Z :- Z is X / Y.
+
+func float-cmp binary, float, float -> bool.
+float-cmp F X Y B :- if (float-holds F X Y) (B = tt) (B = ff).
+
+func float-holds binary, float, float.
+float-holds lt X Y :- !, X < Y.
+float-holds le X Y :- !, X =< Y.
+float-holds gt X Y :- !, X > Y.
+float-holds ge X Y :- X >= Y.
+
+}
+
+% --- dual numbers ----------------------------------------------------------------
+% `dual X DX`: a value X and its tangent DX, over any domain B of numbers. An
+% operation computes its value in B and its tangent by the chain rule, with the
+% partial derivatives of operations.elpi computed in B. Evaluating a program
+% with dual numbers whose tangents are the dx of the inputs gives its value and
+% its tangent dy = J dx: forward differentiation, by the evaluator itself.
+% Over floats (`duals floats`) this is the tangent of the C++ code; over dual
+% numbers (`duals (duals floats)`) it gives second derivatives.
+
+kind dual type -> type.
+type dual N -> N -> dual N.
+
+shorten adjudge.{ dom-lit, dom-op1, dom-op2, dom-cmp }.
+
+namespace adjudge {
+
+func duals domain N -> domain (dual N).
+duals B (domain (dual-lit B) (dual-op1 B) (dual-op2 B) (dual-cmp B)).
+
+% A literal is a constant: its tangent is zero.
+func dual-lit domain N, string -> dual N.
+dual-lit B S (dual X Z) :- dom-lit B S X, dom-lit B "0" Z.
+
+% op1 F (dual X DX) is (F X, F'(X) DX).
+func dual-op1 domain N, unary, dual N -> dual N.
+dual-op1 B F (dual X DX) (dual Y DY) :- dom-op1 B F X Y, dual-partial1 B F X Y P, dom-op2 B mul P DX DY.
+
+% dual-partial1 B F X Y P: P is the derivative of F at X, where Y = F X.
+func dual-partial1 domain N, unary, N, N -> N.
+dual-partial1 B neg _ _ P :- !, dom-lit B "-1" P.
+dual-partial1 B sin X _ P :- !, dom-op1 B cos X P.
+dual-partial1 B cos X _ P :- !, dom-op1 B sin X S, dom-op1 B neg S P.
+dual-partial1 _ exp _ Y Y :- !.
+dual-partial1 B log X _ P :- !, dom-lit B "1" O, dom-op2 B divide O X P.
+dual-partial1 B sqrt _ Y P :- !, dom-lit B "1" O, dom-lit B "2" T, dom-op2 B mul T Y T2, dom-op2 B divide O T2 P.
+dual-partial1 B (pow 0) _ _ P :- !, dom-lit B "0" P.
+dual-partial1 B (pow K) X _ P :-
+  K1 is K - 1, dom-op1 B (pow K1) X Q, KS is int_to_string K, dom-lit B KS KB, dom-op2 B mul KB Q P.
+
+% op2 F (dual X DX) (dual Y DY): the value, and the tangent by the partial derivatives.
+func dual-op2 domain N, binary, dual N, dual N -> dual N.
+dual-op2 B add (dual X DX) (dual Y DY) (dual Z DZ) :- !, dom-op2 B add X Y Z, dom-op2 B add DX DY DZ.
+dual-op2 B sub (dual X DX) (dual Y DY) (dual Z DZ) :- !, dom-op2 B sub X Y Z, dom-op2 B sub DX DY DZ.
+dual-op2 B mul (dual X DX) (dual Y DY) (dual Z DZ) :- !,          % d(xy) = y dx + x dy
+  dom-op2 B mul X Y Z, dom-op2 B mul Y DX A, dom-op2 B mul X DY C, dom-op2 B add A C DZ.
+dual-op2 B divide (dual X DX) (dual Y DY) (dual Z DZ) :-          % d(x/y) = (dx - (x/y) dy) / y
+  dom-op2 B divide X Y Z, dom-op2 B mul Z DY A, dom-op2 B sub DX A C, dom-op2 B divide C Y DZ.
+
+% A comparison compares the values.
+func dual-cmp domain N, binary, dual N, dual N -> bool.
+dual-cmp B F (dual X _) (dual Y _) R :- dom-cmp B F X Y R.
+
+}

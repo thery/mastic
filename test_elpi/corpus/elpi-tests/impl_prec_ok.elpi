@@ -1,0 +1,7 @@
+main :- xx, (xx => xx), xx, xx.
+main :- xx, (xx => xx), !.
+main :- xx, (xx => (xx,xx)), xx, xx.
+main :- std.do! [ xx, xx => xx, xx].
+main :- std.do! [ xx, (pi x\ xx => xx), xx].
+pred xx.
+xx.

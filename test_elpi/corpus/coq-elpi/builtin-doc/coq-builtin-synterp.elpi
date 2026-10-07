@@ -1,0 +1,447 @@
+
+
+
+kind implicit_kind type.
+kind field-attribute type.
+kind upoly-decl type.
+kind upoly-decl-cumul type.
+
+        
+
+% -- Misc ---------------------------------------------------------
+
+% [coq.info ...] Prints an info message
+builtin func coq.info any.. .
+
+% [coq.notice ...] Prints a notice message
+builtin func coq.notice any.. .
+
+% [coq.say ...] Prints a notice message
+builtin func coq.say any.. .
+
+% [coq.debug ...] Prints a debug message
+builtin func coq.debug any.. .
+
+% [coq.warn ...] Prints a generic warning message
+builtin func coq.warn any.. .
+
+% [coq.warning Category Name ...] 
+% Prints a warning message with a Name and Category which can be used
+% to silence this warning or turn it into an error. See coqc -w command
+% line option
+builtin func coq.warning string, string, any.. .
+
+% [coq.error ...] Prints and *aborts* the program. It is a fatal error for
+% Elpi and Ltac
+builtin func coq.error any.. .
+
+% [coq.version VersionString Major Minor Patch] Fetches the version of Coq,
+% as a string and as 3 numbers
+builtin func coq.version -> string, int, int, int.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%% coq-arg-HOAS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% This section contains the low level data types linking Coq and elpi.
+% In particular the entry points for commands
+
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Entry points
+%
+% Command and tactic invocation
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Entry point for commands. Eg. "#[att=true] Elpi mycommand foo 3 (f x)." becomes
+%   main [str "foo", int 3, trm (app[f,x])]
+% in a context where
+%   attributes [attribute "att" (leaf "true")]
+% holds. The encoding of terms is described below.
+% See also the coq.parse-attributes utility.
+builtin pred main list argument.
+
+% Commands with a non-trivial parsing phase can thread data between
+% from the parsing phase to the interp one in an untyped way using the
+% following two entrypoints
+builtin pred main-interp list argument, any.
+builtin pred main-synterp list argument -> any.
+
+% Commands starting/closing proofs have to use the following entrypoints.
+% The minimal working snippet is:
+%
+%    main-interp-proof [trm P] _ P GL _ :-
+%      coq.typecheck P _ ok, coq.ltac.collect-goals P GL _.
+%    main-interp-qed _ _ P _GL _ :-
+%      coq.env.add-const "it" P _ _ _.
+%
+% Where GL are the goals to prove, and _GL (unused here) are the same goals
+% with their current proof. The term P can be used as the root proof term,
+% where GL are missing pieces. One is not obliged to use P as is, i.e. he
+% can inspect _GL and declare each proof independenlty, or combine these proofs
+% as he likes and ignore P completely. When a main-interp-qed is used to end
+% a proof stated by a standard Rocq Lemma/Definition statement, the data from
+% the proof opening command is the lemma name, _GL is the empty list and P the
+% proof term.
+builtin pred main-interp-proof
+  list argument,    % arguments passed to the command
+  any              % data from the parsing phase (defaults to _)
+  ->
+  term,             % proof data for the corresponding proof-closing command
+  list sealed-goal, % the sequents to prove
+  any.              % any data for the corresponding proof-closing command
+builtin pred main-interp-qed
+  list argument,    % arguments passed to the command
+  any,              % data from the parsing phase (defaults to _)
+  term,             % proof data from the corresponding proof-opening command
+  list sealed-goal, % the sequents from the corresponding proof-opening command, but with proofs
+  any.              % any data from the corresponding proof-opening command
+
+pred usage.
+builtin func attributes -> list attribute.
+
+% see coq-lib.elpi for coq.parse-attributes generating the options below
+builtin pred get-option -> string, A.
+
+% The data type of arguments (for commands or tactics)
+data argument.
+builtin symb int      : int    -> argument. % Eg. 1 -2.
+builtin symb str      : string -> argument. % Eg. x "y" z.w. or any Coq keyword/symbol
+builtin symb trm      : term   -> argument. % Eg. (t).
+builtin symb open-trm : int -> term -> argument.
+
+% Extra arguments for commands. [Definition], [Axiom], [Record] and [Context]
+% take precedence over the [str] argument above (when not "quoted").
+%
+% Eg. Record or Inductive
+builtin symb indt-decl : indt-decl -> argument.
+% Eg. #[universes(polymorphic,...)] Record or Inductive
+builtin symb upoly-indt-decl : indt-decl -> upoly-decl -> argument.
+% Eg. Definition or Axiom (when the body is none)
+builtin symb const-decl : id -> option term -> arity -> argument.
+% Eg. #[universes(polymorphic,...)] Definition or Axiom
+builtin symb upoly-const-decl : id -> option term -> arity -> upoly-decl -> argument.
+% Eg. Context A (b : A).
+builtin symb ctx-decl : context-decl -> argument.
+
+% Declaration of inductive types %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+data indt-decl.
+data indc-decl.
+data record-decl.
+
+% An arity is written, in Coq syntax, as:
+%    (x : T1) .. (xn : Tn) : S1 -> ... -> Sn -> U
+% This syntax is used, for example, in the type of an inductive type or
+% in the type of constructors. We call the abstractions on the left of ":"
+% "parameters" while we call the type following the ":" (proper) arity.
+
+% Note: in some contexts, like the type of an inductive type constructor,
+% Coq makes no distinction between these two writings
+%    (xn : Tn) : forall y1 : S1, ...    and      (xn : Tn) (y1 : S1) : ...
+% while Elpi is a bit more restrictive, since it understands user directives
+% such as the implicit status of an arguments (eg, using {} instead of () around
+% the binder), only on parameters.
+% Moreover parameters carry the name given by the user as an "id", while binders
+% in terms only carry it as a "name", an irrelevant pretty pringintg hint (see
+% also the HOAS of terms). A user command can hence only use the names of
+% parameters, and not the names of "forall" quantified variables in the arity.
+%
+% See also the arity->term predicate in coq-lib.elpi
+
+data arity.
+builtin symb parameter   : id -> implicit_kind -> term -> (term -> arity) -> arity = "1".
+builtin symb arity       : term -> arity.
+
+builtin symb parameter   : id -> implicit_kind -> term -> (term -> indt-decl) -> indt-decl = "2".
+builtin symb inductive   : id -> bool -> arity -> (term -> list indc-decl) -> indt-decl. % tt means inductive, ff coinductive
+builtin symb minductive  : id -> bool -> arity -> (term -> indt-decl) -> indt-decl. % one type of a mutual block
+builtin symb mblock      : list (list indc-decl) -> indt-decl. % constructor blocks for minductive declarations
+builtin symb record      : id -> term -> id -> record-decl -> indt-decl.
+
+builtin symb constructor : id -> arity -> indc-decl.
+
+builtin symb field       : field-attributes -> id -> term -> (term -> record-decl) -> record-decl.
+builtin symb end-record  : record-decl.
+
+% Example.
+% Remark that A is a regular parameter; y is a non-uniform parameter and t
+% also features an index of type bool.
+%
+%  Inductive t (A : Type) | (y : nat) : bool -> Type :=
+%  | K1 (x : A) {n : nat} : S n = y -> t A n true -> t A y true
+%  | K2 : t A y false
+%
+% is written
+%
+%  (parameter "A" explicit {{ Type }} a\
+%     inductive "t" tt (parameter "y" explicit {{ nat }} _\
+%                     arity {{ bool -> Type }})
+%      t\
+%       [ constructor "K1"
+%          (parameter "y" explicit {{ nat }} y\
+%           (parameter "x" explicit a x\
+%            (parameter "n" maximal {{ nat }} n\
+%              arity {{ S lp:n = lp:y -> lp:t lp:n true -> lp:t lp:y true }})))
+%       , constructor "K2"
+%          (parameter "y" explicit {{ nat }} y\
+%            arity {{ lp:t lp:y false }}) ])
+%
+% Remark that the uniform parameters are not passed to occurrences of t, since
+% they never change, while non-uniform parameters are both abstracted
+% in each constructor type and passed as arguments to t.
+%
+% The coq.typecheck-indt-decl API can be used to fill in implicit arguments
+% an infer universe constraints in the declaration above (e.g. the hidden
+% argument of "=" in the arity of K1).
+%
+% Note: when and inductive type declaration is passed as an argument to an
+% Elpi command non uniform parameters must be separated from the uniform ones
+% with a | (a syntax introduced in Coq 8.12 and accepted by rocq-elpi since
+% version 1.4, in Coq this separator is optional, but not in Elpi).
+
+% Context declaration (used as an argument to Elpi commands)
+data context-decl.
+% Eg. (x : T) or (x := B), body is optional, type may be a variable
+builtin symb context-item : id -> implicit_kind -> term -> option term -> (term -> context-decl) -> context-decl.
+builtin symb context-end  : context-decl.
+
+typeabbrev field-attributes (list field-attribute).
+
+macro @global!   :- get-option "coq:locality" "global".
+macro @local!    :- get-option "coq:locality" "local".
+
+
+% Coq terms are not visible at synterp time, they are always holes
+
+data term.
+
+data sealed-goal.
+
+data gref.
+
+data abbreviation.
+
+% -- Parsing time APIs
+% ----------------------------------------------------
+
+% [id] is a name that matters, we piggy back on Elpi's strings.
+% Note: [name] is a name that does not matter.
+typeabbrev id string.
+
+
+% Name of a module /*E*/
+data modpath.
+
+
+% Name of a module type /*E*/
+data modtypath.
+
+
+% [coq.locate-module ModName ModPath] locates a module.  It's a fatal error
+% if ModName cannot be located. *E*
+builtin func coq.locate-module id -> modpath.
+
+% [coq.locate-module-type ModName ModPath] locates a module.  It's a fatal
+% error if ModName cannot be located. *E*
+builtin func coq.locate-module-type id -> modtypath.
+
+% Result of coq.locate-all
+builtin data located.
+builtin symb loc-gref         : gref -> located = "1". 
+builtin symb loc-modpath      : modpath -> located = "1". 
+builtin symb loc-modtypath    : modtypath -> located = "1". 
+builtin symb loc-abbreviation : abbreviation -> located = "1". 
+
+% [coq.locate-all Name Located] finds all possible meanings of a string.
+% Does not fail.
+builtin func coq.locate-all id -> list located.
+
+% Coq Module inline directive
+builtin data coq.inline.
+builtin symb coq.inline.no      : coq.inline = "1".  % Coq's [no inline] (aka !)
+builtin symb coq.inline.default : coq.inline = "1".  % The default, can be omitted
+builtin symb coq.inline.at      : int -> coq.inline = "1".  % Coq's [inline at <num>]
+
+builtin func coq.env.begin-module-functor % Starts a functor *E*
+  id,                        % The name of the functor
+  option modtypath,          % Its module type
+  list (pair id modtypath).  % Parameters of the functor
+  
+
+func coq.env.begin-module id, option modtypath -> .
+coq.env.begin-module Name MP :-
+  coq.env.begin-module-functor Name MP [].
+
+
+% [coq.env.end-module ModPath] end the current module that becomes known as
+% ModPath *E*
+builtin func coq.env.end-module -> modpath.
+
+builtin func coq.env.begin-module-type-functor % Starts a module type functor *E*
+  id,                        % The name of the functor
+  list (pair id modtypath).  % The parameters of the functor
+  
+
+func coq.env.begin-module-type id ->.
+coq.env.begin-module-type Name :-
+  coq.env.begin-module-type-functor Name [].
+
+
+% [coq.env.end-module-type ModTyPath] end the current module type that
+% becomes known as ModPath *E*
+builtin func coq.env.end-module-type -> modtypath.
+
+builtin func coq.env.apply-module-functor % Applies a functor *E*
+  id,                % The name of the new module
+  option modtypath,  % Its module type
+  modpath,           % The functor being applied
+  list modpath,      % Its arguments
+  coq.inline         % Arguments inlining
+  -> modpath.        % The modpath of the new module
+  
+builtin func coq.env.apply-module-type-functor % Applies a type functor *E*
+  id,            % The name of the new module type
+  modtypath,     % The functor
+  list modpath,  % Its arguments
+  coq.inline     % Arguments inlining
+  -> modtypath.  % The modtypath of the new module type
+  
+% [coq.env.include-module ModPath Inline] is like the vernacular Include,
+% Inline can be omitted *E*
+builtin func coq.env.include-module modpath, coq.inline.
+
+% [coq.env.include-module-type ModTyPath Inline] is like the vernacular
+% Include Type, Inline can be omitted  *E*
+builtin func coq.env.include-module-type modtypath, coq.inline.
+
+% [coq.env.import-module ModPath] is like the vernacular Import *E*
+builtin func coq.env.import-module modpath.
+
+% [coq.env.export-module ModPath] is like the vernacular Export *E*
+builtin func coq.env.export-module modpath.
+
+% [coq.env.begin-section Name] starts a section named Name *E*
+builtin func coq.env.begin-section id.
+
+% [coq.env.end-section] end the current section *E*
+builtin func coq.env.end-section.
+
+% [coq.modpath->path MP FullPath] extract the full kernel name, each
+% component is a separate list item
+builtin func coq.modpath->path modpath -> list string.
+
+% [coq.modtypath->path MTP FullPath] extract the full kernel name, each
+% component is a separate list item
+builtin func coq.modtypath->path modtypath -> list string.
+
+% [coq.modpath->library MP LibraryPath] extract the enclosing module which
+% can be Required
+builtin func coq.modpath->library modpath -> modpath.
+
+% [coq.modtypath->library MTP LibraryPath] extract the enclosing module
+% which can be Required
+builtin func coq.modtypath->library modtypath -> modpath.
+
+% [coq.env.current-path Path] lists the current module path
+builtin func coq.env.current-path -> list string.
+
+% [coq.env.current-section-path Path] lists the current section path
+builtin func coq.env.current-section-path -> list string.
+
+% clauses
+% 
+% A clause like
+%  :name "foo" :before "bar" foo X Y :- bar X Z, baz Z Y
+% is represented as
+%  clause "foo" (before "bar") (pi x y z\ foo x y :- bar x z, baz z y)
+% that is exactly what one would load in the context using =>.
+% 
+% The name and the grafting specification can be left unspecified.
+builtin data clause.
+builtin symb clause : id -> grafting -> prop -> clause = "1". 
+
+% Specify if the clause has to be grafted before, grafted after or replace
+% a named clause
+builtin data grafting.
+builtin symb before  : id -> grafting = "1". 
+builtin symb after   : id -> grafting = "1". 
+builtin symb remove  : id -> grafting = "1". 
+builtin symb replace : id -> grafting = "1". 
+
+% Specify to which module the clause should be attached to
+builtin data scope.
+builtin symb execution-site : scope = "1".  % The module inside which the Elpi program is run
+builtin symb current        : scope = "1".  % The module being defined (see begin/end-module)
+builtin symb library        : scope = "1".  % The outermost module (carrying the file name)
+
+
+% see coq.elpi.accumulate-clauses
+func coq.elpi.accumulate scope, id, clause ->.
+coq.elpi.accumulate S N C :- coq.elpi.accumulate-clauses S N [C].
+
+
+% [coq.elpi.accumulate-clauses Scope DbName Clauses] 
+% Declare that, once the program is over, the given clauses has to be
+% added to the given db (see Elpi Db).
+% Clauses usually belong to Coq modules: the Scope argument lets one
+% select which module:
+% - execution site (default) is the module in which the pogram is
+%   invoked
+% - current is the module currently being constructed (see
+%   begin/end-module)
+% - library is the current file (the module that is named after the file)
+% The clauses are visible as soon as the enclosing module is
+% Imported.
+% Clauses cannot be accumulated inside functors.
+% Supported attributes:
+% - @local! (default: false, discard at the end of section or module)
+% - @global! (default: false, always active, only if Scope is
+% execution-site, discouraged)
+builtin func coq.elpi.accumulate-clauses scope, id, list clause.
+
+% Action executed during the parsing phase (aka synterp)
+builtin data synterp-action.
+builtin symb begin-module              : id -> synterp-action = "1". 
+builtin symb begin-module-type         : id -> synterp-action = "1". 
+builtin symb begin-section             : id -> synterp-action = "1". 
+builtin symb end-module                : modpath -> synterp-action = "1". 
+builtin symb end-module-type           : modtypath -> synterp-action = "1". 
+builtin symb end-section               : synterp-action = "1". 
+builtin symb apply-module-functor      : id -> synterp-action = "1". 
+builtin symb apply-module-type-functor : id -> synterp-action = "1". 
+builtin symb include-module            : modpath -> synterp-action = "1". 
+builtin symb include-module-type       : modtypath -> synterp-action = "1". 
+builtin symb import-module             : modpath -> synterp-action = "1". 
+builtin symb export-module             : modpath -> synterp-action = "1". 
+
+% Synterp action group
+data group.
+
+
+% [coq.synterp-actions A] Get the list of actions performed during the
+% parsing phase (aka synterp) up to now.
+builtin func coq.synterp-actions -> list synterp-action.
+
+% [coq.begin-synterp-group ID Group] Create and open a new synterp action
+% group with the given name.
+builtin func coq.begin-synterp-group id -> group.
+
+% [coq.end-synterp-group Group] End the synterp action group Group. Group
+% must refer to the most recently openned group.
+builtin func coq.end-synterp-group group.
+
+% Generic attribute value
+builtin data attribute-value.
+builtin symb leaf-str : string -> attribute-value = "1". 
+builtin symb leaf-loc : loc -> attribute-value = "1". 
+builtin symb node     : list attribute -> attribute-value = "1". 
+
+% Generic attribute
+builtin data attribute.
+builtin symb attribute : string -> attribute-value -> attribute = "1". 
+
+
+
+

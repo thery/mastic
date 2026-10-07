@@ -1,0 +1,22 @@
+/* Type inference and unification                                            */
+/* license: GNU Lesser General Public License Version 2.1 or later           */
+/* ------------------------------------------------------------------------- */
+
+% This file does the plumbing to use Coq's elaborator
+
+:name "coq-assign-evar-raw"
+:before "default-assign-evar"
+evar X Ty R :- var R, !, of X Ty R.
+
+:name "coq-assign-evar-refined"
+:before "default-assign-evar"
+evar X Ty R :- not(var R), !, coq.typecheck R Ty ok, X = R.
+
+pred unify-eq term, term.
+unify-eq A B :- coq.unify-eq A B ok.
+
+pred unify-leq term, term.
+unify-leq A B :- coq.unify-leq A B ok.
+
+func of term -> term, term.
+of T Ty TR :- !, coq.elaborate-skeleton T Ty TR ok.

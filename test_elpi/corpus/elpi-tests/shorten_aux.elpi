@@ -1,0 +1,6 @@
+namespace a {
+  pred foo.
+  foo :- !, fail.
+}
+
+shorten a.{ foo }.

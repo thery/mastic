@@ -1,0 +1,170 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                            %                     Trocq                      %
+%  _______                   %        Copyright (C) 2023 Inria & MERCE        %
+% |__   __|                  %     (Mitsubishi Electric R&D Centre Europe)    %
+%    | |_ __ ___   ___ __ _  %        Cyril Cohen <cyril.cohen@inria.fr>      %
+%    | | '__/ _ \ / __/ _` | %        Enzo Crance <enzo.crance@inria.fr>      %
+%    | | | | (_) | (_| (_| | %    Assia Mahboubi <assia.mahboubi@inria.fr>    %
+%    |_|_|  \___/ \___\__, | %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                        | | %   This file is distributed under the terms of  %
+%                        |_| %   GNU Lesser General Public License Version 3  %
+%                            % (see LICENSE file for the text of the license) %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% -----------------------------------------------------------------------------
+% utility predicates
+% -----------------------------------------------------------------------------
+
+% Note: should only contain definitions available during synterp
+
+pred do-not-fail.
+
+kind or type -> type -> type.
+type inl A -> or A B.
+type inr B -> or A B.
+
+kind verbosity type.
+type level.off verbosity.
+type level.info verbosity.
+type level.debug verbosity.
+type level.trace verbosity.
+
+% Returns the numeric level associated to a verbosity, the higher the more verbose.
+pred verbosity->int i:verbosity, o:int.
+verbosity->int level.off -1.
+verbosity->int level.info 0.
+verbosity->int level.debug 1.
+verbosity->int level.trace 2.
+
+% Returns the verbosity level given a name.
+pred string->verbosity i:string o:verbosity.
+string->verbosity "off" level.off.
+string->verbosity "info" level.info.
+string->verbosity "debug" level.debug.
+string->verbosity "trace" level.trace.
+
+pred log-level o:verbosity.
+:name "log-level"
+log-level level.info.
+
+func logging.info prop.
+logging.info P :- util.at-level level.info P.
+func logging.debug prop.
+logging.debug P :- util.at-level level.debug P.
+func logging.trace prop.
+logging.trace P :- util.at-level level.trace P.
+
+namespace util {
+
+func option.value option A, A -> A.
+option.value (uvar as TA) D O :- declare_constraint (option.value TA D O) [TA].
+option.value none Default Default.
+option.value (some A) _ A.
+
+pred cmp-int o:int, o:int, o:cmp.
+cmp-int A B lt :- A < B, !.
+cmp-int A B eq :- A = B, !.
+cmp-int _ _ gt.
+
+func at-level verbosity, prop.
+at-level MinimumLevel Log :- log-level CurrentLevel, !,
+  if ({verbosity->int CurrentLevel} >= {verbosity->int MinimumLevel}) Log true, !.
+at-level _ _.
+
+pred when i:prop, i:prop.
+when Condition Goal :-
+  if (Condition) Goal true.
+
+pred unless i:prop, i:prop.
+unless Condition Goal :-
+  if (Condition) true Goal.
+
+pred if-suspend i:A, i:prop, i:(func), i:(func).
+if-suspend V B T E :- var V, !, declare_constraint (if B T E) [V].
+if-suspend _ B T E :- if B T E.
+
+pred map.find-opt i:A, i:std.map A B, o:option B.
+map.find-opt K M (some V) :- std.map.find K M V, !.
+map.find-opt _ _ none.
+
+func map.update A, (func option B -> option B), std.map A B -> std.map A B.
+map.update K F M M' :-
+  map.find-opt K M (some V), !,
+  F (some V) OV',
+  if (OV' = some V')
+    (std.map.add K V' M M', !)  % replace
+    (std.map.remove K M M', !). % remove
+map.update K F M M' :-
+  F none (some V'), !,
+  std.map.add K V' M M', !.     % add
+map.update _ _ M M.          % no-op
+
+func delete A, list A -> list A.
+delete A [A|Xs] Xs :- !.
+delete A [X|Xs] [X|Xs'] :- delete A Xs Xs'.
+delete _ [] [].
+
+% Merge sort for lists
+func sort.merge (func A, A -> cmp), list A -> list A.
+func sort.merge.join (func A, A -> cmp), list A, list A -> list A.
+func sort.merge.split list A -> list A, list A.
+sort.merge.split [] [] [].
+sort.merge.split [X] [X] [].
+sort.merge.split [X,Y|L] [X|L1] [Y|L2] :- sort.merge.split L L1 L2.
+sort.merge.join _ [] L L :- !.
+sort.merge.join _ L [] L :- !.
+sort.merge.join Cmp [X1|L1] [X2|L2] [X|L] :-
+  if (Cmp X1 X2 lt) % If X1 < X2
+    (X = X1, sort.merge.join Cmp L1 [X2|L2] L)
+    (X = X2, sort.merge.join Cmp [X1|L1] L2 L).
+sort.merge _ [] [] :- !.
+sort.merge _ [X] [X] :- !.
+sort.merge Cmp L S :-
+  sort.merge.split L L1 L2,
+  sort.merge Cmp L1 S1,
+  sort.merge Cmp L2 S2,
+  sort.merge.join Cmp S1 S2 S.
+
+% We use merge sort as the default sort
+func sort (func A, A -> cmp), list A -> list A.
+sort Cmp L L' :- sort.merge Cmp L L'.
+
+% Remove duplicates from a sorted list
+func sorted-cmp-undup (func A, A -> cmp), list A -> list A.
+sorted-cmp-undup _ [] [].
+sorted-cmp-undup _ [X] [X].
+sorted-cmp-undup Cmp [X,Y|L] L' :- Cmp X Y eq, !, sorted-cmp-undup Cmp [Y|L] L'.
+sorted-cmp-undup Cmp [X,Y|L] [X|L'] :- sorted-cmp-undup Cmp [Y|L] L'.
+
+% Remove duplicates from any list using a comparator
+func cmp-undup (func A, A -> cmp), list A -> list A.
+func cmp-undup.aux std.set A, list A ->  list A.
+cmp-undup Cmp Xs Ys :- cmp-undup.aux {std.set.make Cmp} Xs Ys.
+cmp-undup.aux _ [] [].
+cmp-undup.aux Duplicates [X|Xs] Ys :- std.set.mem X Duplicates, !, cmp-undup.aux Duplicates Xs Ys.
+cmp-undup.aux Duplicates [X|Xs] [X|Ys] :- cmp-undup.aux {std.set.add X Duplicates} Xs Ys.
+
+% Remove duplicates from any list using elpi unification
+func undup list A -> list A.
+func undup.is-dup -> A.
+undup [] [].
+undup [X|Xs] Ys :- undup.is-dup X, !, undup Xs Ys.
+undup [X|Xs] [X|Ys] :- undup.is-dup X => undup Xs Ys.
+
+% Makes a comparator with lexicographic order for lists from a comparator of its elements
+func lexicographic-cmp (func K, K -> cmp) -> (func list K, list K -> cmp).
+func lexicographic-cmp.curry (func K, K -> cmp), list K, list K -> cmp.
+lexicographic-cmp.curry _ [] [] eq :- !.
+lexicographic-cmp.curry F [X|_] [Y|_] Cmp :- F X Y Cmp, not (Cmp = eq), !.
+lexicographic-cmp.curry F [_|Xs] [_|Ys] Cmp :- lexicographic-cmp.curry F Xs Ys Cmp.
+lexicographic-cmp F (lexicographic-cmp.curry F).
+
+func bool->int bool -> int.
+bool->int tt 1.
+bool->int ff 0.
+
+} % util
+
+pred std.string.list->set i:list string, o:std.string.set.
+std.string.list->set [] Empty :- std.string.set.empty Empty.
+std.string.list->set [S|Rest] Set :-
+  std.string.set.add S {std.string.list->set Rest} Set.

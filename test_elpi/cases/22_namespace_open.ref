@@ -1,0 +1,4 @@
+p 1.
+namespace foo {
+p 2.
+}

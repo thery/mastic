@@ -1,0 +1,6 @@
+; copy of elpi/src/utils
+(library
+ (name elpi_util)
+ (preprocess (per_module ((pps ppx_deriving.std) util union_find)))
+ (libraries unix re.str)
+ (modules util union_find))
