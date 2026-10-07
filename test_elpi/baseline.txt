@@ -1,0 +1,30 @@
+files: 387 used, 4 skipped (the original does not parse cleanly)
+edit          runs  crash  precision   recall       F1 decl-errs term-errs  err-chars
+-------------------------------------------------------------------------------------
+truncate      3827    288    100.00%   79.78%   88.75%      0.89      0.00      108.7
+del-token     3827     64     99.71%   94.33%   96.94%      0.11      0.47       62.7
+del-line      3119     23     99.80%   96.54%   98.14%      0.04      0.12       62.0
+del-chunk     3610     31     99.72%   94.35%   96.96%      0.11      0.18      104.5
+del-closer    3283    174     99.17%   77.70%   87.13%      0.36      1.15      439.3
+half-token    3827    100     99.67%   94.66%   97.10%      0.09      0.41       80.0
+TOTAL        21493    680     99.66%   90.37%   94.79%      0.27      0.38      137.0
+
+crashes:
+    221  Elpi_parser.Lexer.Error(_, "missing terminator for quotation starting here")
+    153  Failure("lexing: empty token")
+     87  Elpi_parser.Lexer.Error(_, "missing terminator for string starting here")
+     79  Invalid_argument("Mastic: too many loops. This should never happen, please report the issue")
+     37  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: ..")
+     30  File "src/errorResilientParser.ml", line 271, characters 42-48: Assertion failed
+     18  Elpi_parser.Parser_config.ParseError(_, "bind '\\' operator must follow a name")
+     15  Elpi_parser.Parser_config.ParseError(_, "Only one symbol with a named external reference can be marked with the external attribute at a time.")
+      8  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: (.. : ..)")
+      8  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: x\\..")
+      6  Elpi_parser.Parser_config.ParseError(_, "Illformed macro left hand side")
+      4  Elpi_parser.Parser_config.ParseError(_, "Macro name must begin with '@'")
+      4  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: ")
+      3  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: x\\x\\x\\..")
+      3  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: x\\{{ .. }}")
+      2  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: x\\x\\x\\x\\x\\x\\x\\..")
+      1  Elpi_parser.Ast.Term.NotInProlog(_, "syntax error: the head of an application must be a constant or a variable, got: x\\x\\x\\x\\..")
+      1  Elpi_parser.Parser_config.ParseError(_, "Mixfix directives are not supported by this parser.\n\nThe parser is based on token families.\nA family is id
