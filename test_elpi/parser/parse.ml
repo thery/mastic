@@ -265,7 +265,7 @@ module Recovery = struct
     | _ -> false
 
   let handle_unexpected_token ~productions ~next_token ~acceptable_tokens
-      ~reducible_productions ~generation_streak =
+      ~reducible_productions ~generation_streak ~lookahead =
     let open Mastic.ErrorResilientParser in
     (* finish the current declaration: reduce if possible, otherwise insert
        the final dot or a closing bracket if it fits, otherwise try the dot
@@ -300,7 +300,7 @@ module Recovery = struct
     | _ -> TurnIntoError
 end
 
-module ErProgram = Mastic.ErrorResilientParser.Make(Grammar.MenhirInterpreter)(ProgramParser)(Recovery)
+module ErProgram = Mastic.ErrorResilientParser.MakeLookahead(Grammar.MenhirInterpreter)(ProgramParser)(Recovery)
 
 let () = Mastic.ErrorResilientParser.debug := Sys.getenv_opt "MASTIC_DEBUG" <> None
 
