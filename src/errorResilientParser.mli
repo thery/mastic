@@ -8,6 +8,17 @@ type ('token, 'production) recovery_action =
   | GenerateHole
   | GenerateToken of 'token tok
   | Reduce of 'production
+  | Skip  (** drop the token (an error is recorded at its position) *)
+
+(** The result of a simulation, see [lookahead] *)
+type simulation = {
+  shifted : int;  (** the tokens of the input shifted *)
+  lost : int;  (** the tokens of the input that went into errors (or were skipped) *)
+  inserted : int;  (** the tokens and holes inserted *)
+  completed : bool;  (** [limit] tokens were shifted, or the parse completed *)
+}
+
+val failed_simulation : simulation
 
 (** What [handle_unexpected_token] sees ahead, the input being lexed upfront
     (see [MakeLookahead]). *)
@@ -20,15 +31,20 @@ type ('token, 'production) lookahead = {
   pending : 'token tok list;
       (** the tokens read but not consumed after [next_token], e.g. the token
           of the input before which the recovery inserted [next_token] *)
-  simulate : limit:int -> ('token, 'production) recovery_action list -> int;
+  in_simulation : bool;
+      (** the recovery is called inside a simulation: [simulate] then always
+          fails, simulations do not nest *)
+  simulate : limit:int -> ('token, 'production) recovery_action list -> simulation;
       (** [simulate ~limit actions] tries a repair, without effect on the real
           parse: the parser goes on from the current error, the [n]-th error
-          met (the current one first) being answered by the [n]-th action;
-          the simulation stops at the first error after the last action, or
-          when [limit] tokens of the input have been shifted, or at the end of
-          the input. The result is the number of tokens of the input shifted
-          ([limit] when the parse completes), or [-1] if an action could not
-          be applied. The semantic actions run: they had better be pure. *)
+          met (the current one first) being answered by the [n]-th action,
+          the next ones by [handle_unexpected_token] (with [in_simulation]);
+          it stops when [limit] tokens of the input have been shifted (or the
+          parse completes), or when it seems to loop. Its result tells what
+          the repair costs: the tokens of the input that went into errors in
+          the meantime (merged with the stack, turned into errors, skipped),
+          and the tokens inserted. The semantic actions run: they had better
+          be pure. *)
 }
 
 val ahead : ('token, 'production) lookahead -> int -> 'token tok

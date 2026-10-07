@@ -24,14 +24,20 @@ type ('token, 'production) recovery_action =
   | GenerateHole
   | GenerateToken of 'token tok
   | Reduce of 'production
+  | Skip
 
 (* What the recovery sees ahead when the input is lexed upfront: all the
    tokens, where the parser is, and a way to try a repair. *)
+type simulation = { shifted : int; lost : int; inserted : int; completed : bool }
+
+let failed_simulation = { shifted = -1; lost = max_int; inserted = max_int; completed = false }
+
 type ('token, 'production) lookahead = {
   tokens : 'token tok array;
   position : int;
   pending : 'token tok list;
-  simulate : limit:int -> ('token, 'production) recovery_action list -> int;
+  in_simulation : bool;
+  simulate : limit:int -> ('token, 'production) recovery_action list -> simulation;
 }
 
 let ahead la k =
@@ -215,8 +221,18 @@ struct
         let acceptable = List.concat_map next_of items |> List.map tok in
         (acceptable, reductions)
 
+
   (* a token waiting to be read: from the input, or made by the recovery *)
   type itok = { tok : token tok; input : bool }
+
+  (* a simulation, see [lookahead.simulate] *)
+  type sim = {
+    limit : int; (* stop after [limit] tokens of the input are shifted *)
+    script : (token, production) recovery_action list; (* the answers to the next errors *)
+    lost_spans : (int * int) list; (* the text that went into errors *)
+    sim_inserted : int; (* tokens and holes inserted *)
+    budget : int; (* errors that may still be handled, against loops *)
+  }
 
   type state = {
     tokens : token tok array; (* the whole input, lexed upfront, EOF last *)
@@ -226,41 +242,66 @@ struct
     incoming_toks : itok list; (* the head of the token is the lookahead *)
     generation_streak : int; (* how many dummy tokens were generated since the last read from the stream *)
     ticks : int; (* when we reach eof we have at most ticks to terminate *)
-    sim : (int * (token, production) recovery_action list) option;
-        (* a simulation: stop after [limit] tokens of the input are shifted,
-           and answer the errors with the script of actions *)
+    sim : sim option; (* when simulating a repair *)
     shifted : int; (* how many tokens of the input were shifted, in a simulation *)
   }
 
-  exception Simulated of int
+  exception Simulated of state * bool
+
+  let in_sim st = st.sim <> None
+  let dbg st f = if not (in_sim st) then dbg f
+
+  (* the number of tokens of the input inside the spans *)
+  let lost_tokens tokens spans =
+    let spans = List.sort compare spans in
+    let rec union = function
+      | (b1, e1) :: (b2, e2) :: rest when b2 <= e1 -> union ((b1, max e1 e2) :: rest)
+      | x :: rest -> x :: union rest
+      | [] -> []
+    in
+    (* the first index whose token satisfies p, p being monotone *)
+    let first p =
+      let rec aux lo hi = if lo >= hi then lo else let m = (lo + hi) / 2 in if p tokens.(m) then aux lo m else aux (m + 1) hi in
+      aux 0 (Array.length tokens)
+    in
+    List.fold_left
+      (fun n (b, e) ->
+        let i = first (fun t -> t.b.pos_cnum >= b) and j = first (fun t -> t.e.pos_cnum > e) in
+        n + max 0 (j - i))
+      0 (union spans)
+
+  let add_lost st b e =
+    match st.sim with
+    | None -> st
+    | Some sim -> { st with sim = Some { sim with lost_spans = (b.pos_cnum, e.pos_cnum) :: sim.lost_spans } }
+
+  let add_inserted st =
+    match st.sim with None -> st | Some sim -> { st with sim = Some { sim with sim_inserted = sim.sim_inserted + 1 } }
 
   let rec loop st (ckpt : ast checkpoint) =
     match ckpt with
     (* pretty much the definition of error resiliency *)
     | Rejected -> assert false
     (* standard part, we just log what happend for debugging. Shifting pops the tokens buffer *)
-    | Accepted v -> begin
-        match st.sim with
-        | Some (limit, _) -> raise (Simulated limit)
-        | None ->
-            dbg (fun () -> say "@[<hov 2>ACCEPT@]@\n");
-            (st.errbuf, st.compbuf, v)
-      end
+    | Accepted v ->
+        if in_sim st then raise (Simulated (st, true));
+        dbg st (fun () -> say "@[<hov 2>ACCEPT@]@\n");
+        (st.errbuf, st.compbuf, v)
     | Shifting (_, s, _) ->
-        if st.sim = None then dbg (fun () -> say "@[<hov 2>SHIFT %a@]@\n" pp_env s);
+        dbg st (fun () -> say "@[<hov 2>SHIFT %a@]@\n" pp_env s);
         let shifted = match st.incoming_toks with { input = true } :: _ -> st.shifted + 1 | _ -> st.shifted in
-        (match st.sim with Some (limit, _) when shifted >= limit -> raise (Simulated limit) | _ -> ());
-        let chkp = resume ckpt in
-        loop { st with incoming_toks = tail st.incoming_toks; shifted } chkp
+        let st = { st with incoming_toks = tail st.incoming_toks; shifted } in
+        (match st.sim with Some { limit } when shifted >= limit -> raise (Simulated (st, true)) | _ -> ());
+        loop st (resume ckpt)
     | AboutToReduce (s, p) ->
         let n = List.length @@ rhs p in
-        if st.sim = None then dbg (fun () -> say "@[<hov 2>RED %d %a@]@\n" n pp_env s);
+        dbg st (fun () -> say "@[<hov 2>RED %d %a@]@\n" n pp_env s);
         let chkp = resume ckpt in
         loop st chkp
     (* reading: from the buffer if not empty, otherwise from the input *)
     | InputNeeded _env ->
         if st.ticks = 0 then
-          if st.sim <> None then raise (Simulated st.shifted)
+          if in_sim st then raise (Simulated (st, false))
           else invalid_arg "Mastic: too many loops. This should never happen, please report the issue"
         else
           let ((tok, _, _) as token), st =
@@ -276,53 +317,64 @@ struct
                   { st with incoming_toks = [ { tok = last_tok; input = true } ]; pos = st.pos + 1;
                             generation_streak; ticks } )
           in
-          if st.sim = None then dbg (fun () -> say "@[<hov 2>READ %s@]@\n" (show_token @@ tok));
+          dbg st (fun () -> say "@[<hov 2>READ %s@]@\n" (show_token @@ tok));
           let chkp = offer ckpt token in
           loop st chkp
     (* handling errors, two cases:
        1. the lookahead does not fit (fail to shift)
        2. the stack does not reduce *)
     | HandlingError env -> (
-        if st.sim = None then dbg (fun () -> say "@[<hov 2>* ERROR: stack %a@]@\n" pp_env env);
+        dbg st (fun () -> say "@[<hov 2>* ERROR: stack %a@]@\n" pp_env env);
         match st.incoming_toks with
         (* 1.1 shift failure, the token is invalid (not even a token, just a piece of text) *)
         | { tok = { s; t; b; e }; input } :: incoming_toks when is_error_token t ->
-            dbg (fun () -> say "@[<hov 2>  LOOKAHEAD: %s (invalid token)@]@\n" (show_token t));
+            dbg st (fun () -> say "@[<hov 2>  LOOKAHEAD: %s (invalid token)@]@\n" (show_token t));
             (* b and e are likely wrong after merge *)
             begin
               match ensure_top_is_error_token env with
               | None -> failwith "the grammar start symbol must include an atom for parse error"
               | Some (t0, env) ->
                   let t = merge_parse_error t0 t in
-                  dbg (fun () -> say "@[<hov 2>  RECOVERY: push (squashed) %s on %a@]@\n" (show_token t) pp_env env);
-                  let chkp = offer (input_needed env) (valid t) in
+                  dbg st (fun () -> say "@[<hov 2>  RECOVERY: push (squashed) %s on %a@]@\n" (show_token t) pp_env env);
+                  let ((_, vb, ve) as v) = valid t in
+                  let chkp = offer (input_needed env) v in
                   let incoming_toks = { tok = { s; t; b; e }; input } :: incoming_toks in
-                  loop { st with incoming_toks } chkp
+                  loop (add_lost { st with incoming_toks } vb ve) chkp
             end
         (* 1.1 shift failure, the token does not fit *)
         | ({ tok = next_token } as next) :: incoming_toks -> begin
-            match st.sim with
-            | Some (_, []) -> raise (Simulated st.shifted)
-            | Some (limit, action :: script) ->
-                apply_action { st with sim = Some (limit, script) } st env next incoming_toks action
+            let st, scripted =
+              match st.sim with
+              | Some ({ script = a :: script } as sim) -> ({ st with sim = Some { sim with script } }, Some a)
+              | Some { budget } when budget <= 0 -> raise (Simulated (st, false))
+              | Some sim -> ({ st with sim = Some { sim with budget = sim.budget - 1 } }, None)
+              | None -> (st, None)
+            in
+            match scripted with
+            | Some action -> apply_action st st env next incoming_toks action
             | None ->
-                dbg (fun () -> say "@[<hov 2>  LOOKAHEAD: %s (out of place token)@]@\n" (show_token next_token.t));
+                dbg st (fun () -> say "@[<hov 2>  LOOKAHEAD: %s (out of place token)@]@\n" (show_token next_token.t));
                 let acceptable_tokens, reducible_productions = automaton_possible_moves env next_token.b in
                 let productions = automaton_productions env in
                 let state_id = current_state_number env in
                 let st_w_err = { st with errbuf = ParseError (next_token.b, state_id) :: st.errbuf } in
-                dbg (fun () -> say "@[<hov 2>    STATE: %a@]@\n" pp_prodsn productions);
-                dbg (fun () -> say "@[<hov 2>    PROPOSE: reductions: %a@]@\n" pp_prods reducible_productions);
-                dbg (fun () -> say "@[<hov 2>    PROPOSE: tokens: %a@]@\n" pp_gens acceptable_tokens);
+                dbg st (fun () -> say "@[<hov 2>    STATE: %a@]@\n" pp_prodsn productions);
+                dbg st (fun () -> say "@[<hov 2>    PROPOSE: reductions: %a@]@\n" pp_prods reducible_productions);
+                dbg st (fun () -> say "@[<hov 2>    PROPOSE: tokens: %a@]@\n" pp_gens acceptable_tokens);
                 let simulate ~limit actions =
-                  let st = { st with sim = Some (limit, actions); shifted = 0 } in
-                  try ignore (loop st ckpt); assert false with
-                  | Simulated n -> n
-                  | (Out_of_memory | Stack_overflow) as e -> raise e
-                  | _ -> -1
+                  if in_sim st then failed_simulation
+                  else
+                    let sim = { limit; script = actions; lost_spans = []; sim_inserted = 0; budget = 2 * limit + 10 } in
+                    match loop { st with sim = Some sim; shifted = 0 } ckpt with
+                    | _ -> assert false
+                    | exception Simulated ({ sim = Some sim; shifted }, completed) ->
+                        { shifted; completed; inserted = sim.sim_inserted; lost = lost_tokens st.tokens sim.lost_spans }
+                    | exception ((Out_of_memory | Stack_overflow) as e) -> raise e
+                    | exception _ -> failed_simulation
                 in
                 let lookahead =
-                  { tokens = st.tokens; position = st.pos; pending = List.map (fun x -> x.tok) incoming_toks; simulate }
+                  { tokens = st.tokens; position = st.pos; pending = List.map (fun x -> x.tok) incoming_toks;
+                    in_simulation = in_sim st; simulate }
                 in
                 let action =
                   handle_unexpected_token ~productions ~next_token ~reducible_productions ~acceptable_tokens
@@ -336,57 +388,59 @@ struct
   (* st_w_err is st with the error recorded *)
   and apply_action st_w_err st env ({ tok = next_token } as next) incoming_toks action =
     match action with
-    | TurnIntoError when is_eof_token next_token.t -> begin
+    | (TurnIntoError | Skip) when is_eof_token next_token.t -> begin
         match ensure_top2_are_error_token env with
         | Empty | TopIsErr _ -> assert false
         | Top2AreErr (x, y, env) ->
             let t = merge_parse_error x y in
             (* TODO: fix locs *)
             let ((_, b, e) as valid) = valid t in
-            dbg (fun () -> say "@[<hov 2>  RECOVERY: squash %s and %s and push@]@\n" (show_token x) (show_token y));
+            dbg st (fun () -> say "@[<hov 2>  RECOVERY: squash %s and %s and push@]@\n" (show_token x) (show_token y));
             let chkp = offer (input_needed env) valid in
             let incoming_toks = { tok = { t; s = ""; b; e }; input = false } :: incoming_toks in
-            loop { st_w_err with incoming_toks } chkp
+            loop (add_lost { st_w_err with incoming_toks } b e) chkp
       end
     | TurnIntoError ->
         let t =
           { next_token with t = build_error_token Error.(mkLexError (loc next_token.s next_token.b next_token.e)) }
         in
         let incoming_toks = { tok = t; input = false } :: incoming_toks in
-        dbg (fun () ->
+        dbg st (fun () ->
             say "@[<hov 2>  RECOVERY: turn %s into %s and push@]@\n" (show_token next_token.t) (show_token t.t));
         let chkp = offer (input_needed env) (tok_to_triple t) in
-        loop { st_w_err with incoming_toks } chkp
+        loop (add_lost { st_w_err with incoming_toks } t.b t.e) chkp
     | TurnIntoThisError e ->
         let t = { next_token with t = build_error_token e } in
         let incoming_toks = { tok = t; input = false } :: incoming_toks in
-        dbg (fun () ->
+        dbg st (fun () ->
             say "@[<hov 2>  RECOVERY: turn %s into %s and push@]@\n" (show_token next_token.t) (show_token t.t));
         let chkp = offer (input_needed env) (tok_to_triple t) in
-        loop { st_w_err with incoming_toks } chkp
+        loop (add_lost { st_w_err with incoming_toks } t.b t.e) chkp
+    | Skip ->
+        dbg st (fun () -> say "@[<hov 2>  RECOVERY: skip %s@]@\n" (show_token next_token.t));
+        loop (add_lost { st_w_err with incoming_toks } next_token.b next_token.e) (input_needed env)
     | GenerateHole ->
         let b = next_token.b in
         let t = { s = "_"; t = build_error_token Error.(mkLexError (loc "_" b b)); b = next_token.b; e = next_token.b } in
         let incoming_toks = { tok = t; input = false } :: next :: incoming_toks in
-        dbg (fun () -> say "@[<hov 2>  RECOVERY: generate hole and push (generation_streak = %d)@]@\n" st.generation_streak);
+        dbg st (fun () -> say "@[<hov 2>  RECOVERY: generate hole and push (generation_streak = %d)@]@\n" st.generation_streak);
         let chkp = offer (input_needed env) (tok_to_triple t) in
         let compbuf = (t.b, t.s) :: st.compbuf in
         let generation_streak = st.generation_streak + 1 in
-        loop { st_w_err with incoming_toks; compbuf; generation_streak } chkp
+        loop (add_inserted { st_w_err with incoming_toks; compbuf; generation_streak }) chkp
     | GenerateToken t ->
         let incoming_toks = { tok = t; input = false } :: next :: incoming_toks in
-        dbg (fun () ->
+        dbg st (fun () ->
             say "@[<hov 2>  RECOVERY: generate %s and push (generation_streak = %d)@]@\n" t.s st.generation_streak);
         let chkp = offer (input_needed env) (tok_to_triple t) in
         let compbuf = (t.b, t.s) :: st.compbuf in
         let generation_streak = st.generation_streak + 1 in
-        loop { st_w_err with incoming_toks; compbuf; generation_streak } chkp
+        loop (add_inserted { st_w_err with incoming_toks; compbuf; generation_streak }) chkp
     | Reduce p ->
         let incoming_toks = next :: incoming_toks in
-        dbg (fun () -> say "@[<hov 2>  RECOVERY: reduce %a@]@\n" pp_prod p);
+        dbg st (fun () -> say "@[<hov 2>  RECOVERY: reduce %a@]@\n" pp_prod p);
         let chkp = input_needed (force_reduction p env) in
         loop { st with incoming_toks } chkp
-
   (* all the tokens, up to EOF *)
   let lex lexbuf =
     let rec aux acc =
