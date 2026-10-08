@@ -200,6 +200,7 @@ parser state, and the function chooses one of these actions:
 | `GenerateToken t` | inserts the token `t` before the unexpected one |
 | `GenerateHole` | inserts an empty error token: an error node where something is missing |
 | `TurnIntoError` | turns the unexpected token into an error token |
+| `Skip` | drops the unexpected token (the error is reported at its position) |
 
 The strategy for Elpi uses them as follows. Each rule is shown with what
 `main.exe` prints.
@@ -263,8 +264,33 @@ ast:
 error. At the beginning of a declaration, a token that does not fit is always
 turned into an error.
 
+**Looking ahead.** The input is lexed upfront into an array of tokens, so
+the recovery also sees all the tokens ahead (functor
+`Mastic.ErrorResilientParser.MakeLookahead`), and can *simulate* a repair:
+Mastic runs the parser on a copy, answering the next errors with the
+recovery, over the next 10 tokens, and tells how many tokens of the input
+went into errors. At each error, the recovery tries the actions that make
+sense (the one chosen by the rules above, turn into an error, hole, skip,
+insert a closer, reduce) and keeps the cheapest, the rules above winning
+unless another action saves a whole token. An extra `)` is now skipped
+instead of swallowing the term before it:
+
+```
+input: p X :- q X), r.
+error: line 1, column 10: skipped )
+ast:   clause (:- (p X) (, (q X) r))
+```
+
+A few rules use the tokens ahead directly: a closer is not inserted when the
+same closer comes later in the declaration (bracket balance); the search
+never skips nor turns into an error a `.`; a token that ends its line before
+a line starting at column 0 finishes the declaration; and a `(` or `[` left
+open in the head of a clause is closed before its `:-` (`p [X|Y :- q X.`
+reads `p [X|Y] :- q X.`).
+
 [`STRATEGY.md`](STRATEGY.md) compares this strategy, rule by rule, with the
-one of the first version (the PR LPCIC/elpi#385 on Elpi).
+one of the first version (the PR LPCIC/elpi#385 on Elpi), and explains the
+lookahead (section 5), with the variants tried and rejected.
 
 ## 7. Never crash
 
@@ -378,32 +404,35 @@ programs of Elpi's `tests/sources`, and the Elpi files of hierarchy-builder,
 Trocq, Trakt, coq-elpi, math-comp, one_num_type and elpiDiff: 387 files,
 about 30 000 lines, 21 493 edits.
 
-|                                      | strategy of error-parser | this strategy |
-|--------------------------------------|-------------------------:|--------------:|
-| crashes                              | 680                      | **0**         |
-| precision                            | 99.7 %                   | 99.7 %        |
-| recall                               | 90.4 %                   | **98.6 %**    |
-| F1                                   | 94.8 %                   | **99.2 %**    |
-| errors covering a whole declaration, per edit | 0.27            | **0.06**      |
-| characters inside errors, per edit   | 137                      | **28**        |
+|                                      | strategy of error-parser | this strategy, without lookahead | this strategy |
+|--------------------------------------|-------------------------:|------------:|--------------:|
+| crashes                              | 680                      | 0           | **0**         |
+| precision                            | 99.7 %                   | 99.70 %     | 99.68 %       |
+| recall                               | 90.4 %                   | 98.62 %     | **99.10 %**   |
+| F1                                   | 94.8 %                   | 99.16 %     | **99.39 %**   |
+| errors covering a whole declaration, per edit | 0.27            | 0.06        | **0.05**      |
+| characters inside errors, per edit   | 137                      | 28.5        | **14.4**      |
 
 The first column (`baseline.txt`) is the strategy of the first version of
 this work (the branch error-parser of Elpi, LPCIC/elpi#385: reduce inside a
 term, otherwise turn the token into an error; the lexer and the semantic
 actions raise), run with the same grammar and error nodes. Both strategies
 rarely build a wrong structure, so precision is the same; the difference is
-how much of the good structure survives an error. Details per kind of edit
-are in `baseline.txt` and `improved.txt`.
+how much of the good structure survives an error. The middle column is the
+strategy before the lookahead (sections 1–4 of `STRATEGY.md`). Details per
+kind of edit are in `baseline.txt` and `improved.txt` (the last column).
 
 ## 10. What remains to do
 
-The low scores of `cases.t` show what the strategy does not handle yet:
+The low scores of `cases.t` show what the strategy does not handle:
 
-- a missing `]` before `:-` (`p [X|Y :- q X.`, recall 40 %);
-- an extra `)` (`p X :- q X), r.`): the error swallows the terms before it;
-- a missing `.` when the next line can continue the clause
-  (`p X :- q X,` then `p 3.`): the next clause is read as part of this one;
-  only a guess based on indentation could split them.
+- a missing `.` when the next line can continue the clause (`p 2` then
+  `p 3.` is the valid clause `p 2 p 3`, and so is `p X :- q X` then
+  `p 3 :- r.`): the program is valid, so the recovery is never called; only a
+  guess based on indentation could split them, at the price of changing how
+  some valid programs parse;
+- `p # 2.` is valid too (`#` is an infix operator);
+- an unterminated string (`p "abc.`): the string is lost.
 
 And some limits of the method:
 
