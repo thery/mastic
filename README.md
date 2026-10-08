@@ -223,7 +223,7 @@ and measure the quality of the recovery on thousands of damaged programs
 (precision, recall and F1 of the nodes of the recovered syntax tree):
 
 - [`test_elpi`](test_elpi/README.md): the parser of Elpi;
-- [`tests_jazz`](tests_jazz/README.md): the parser of Jasmin.
+- [`test_jazz`](test_jazz/README.md): the parser of Jasmin.
 
 ## What is the status of this software?
 

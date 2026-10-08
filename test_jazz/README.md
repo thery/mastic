@@ -99,12 +99,12 @@ no error on any of them.
 ## 3. Trying it
 
 ```sh
-dune build ./tests_jazz/main.exe
-printf 'fn f(reg u64 x) {\n  x = x + ;\n}\n' | ./_build/default/tests_jazz/main.exe   # one program
-./_build/default/tests_jazz/main.exe -ref good.jazz bad.jazz        # with the measure
-./_build/default/tests_jazz/main.exe -strict good.jazz              # the normal path
-dune runtest tests_jazz                                             # the cram tests
-python3 tests_jazz/recov.py fuzz $(find tests_jazz/corpus -name '*.jazz')   # the simulation
+dune build ./test_jazz/main.exe
+printf 'fn f(reg u64 x) {\n  x = x + ;\n}\n' | ./_build/default/test_jazz/main.exe   # one program
+./_build/default/test_jazz/main.exe -ref good.jazz bad.jazz        # with the measure
+./_build/default/test_jazz/main.exe -strict good.jazz              # the normal path
+dune runtest test_jazz                                             # the cram tests
+python3 test_jazz/recov.py fuzz $(find test_jazz/corpus -name '*.jazz')   # the simulation
 ```
 
 How to read the output of `main.exe`:
