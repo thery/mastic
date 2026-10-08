@@ -17,6 +17,11 @@ let text = ref ""
 (* the baseline strategy of section 9 of the README (JAZZ_BASELINE set) *)
 let baseline = Sys.getenv_opt "JAZZ_BASELINE" <> None
 
+(* the rules of the strategy can be turned off one by one, to measure what
+   each one brings: JAZZ_OFF=hole,lbrace,... *)
+let off = String.split_on_char ',' (Option.value (Sys.getenv_opt "JAZZ_OFF") ~default:"")
+let on rule = not (List.mem rule off)
+
 module ProgramParser = struct
   type ast = pprogram
   type 'a checkpoint = 'a I.checkpoint
@@ -352,6 +357,24 @@ module Recovery = struct
       | Some (I.X (I.N (I.N_pblock | I.N_pblock_r | I.N_pfunbody))) -> true
       | _ -> false) productions
 
+  (* in the header of a function: its parameters, its result types, or
+     after a broken header (fn Err . { ... }) *)
+  let in_header (lhs, rhs, _, pos) =
+    match lhs with
+    | I.X (I.N (I.N_separated_nonempty_list_COMMA_annot_pparamdecl_ | I.N_annot_pparamdecl
+               | I.N_pparamdecl_empty_ | I.N_separated_nonempty_list_empty_var_
+               | I.N_annot_stor_type | I.N_separated_nonempty_list_COMMA_annot_stor_type_
+               | I.N_pfundef)) -> true
+    | I.X (I.N I.N_top) ->
+        (match List.nth_opt rhs pos with Some (I.X (I.N I.N_pfunbody)) -> true | _ -> false)
+    | _ -> false
+
+  (* after a parameter of a function *)
+  let after_param (lhs, _, _, pos) =
+    match lhs, pos with
+    | I.X (I.N I.N_separated_nonempty_list_COMMA_annot_pparamdecl_), 1 -> true
+    | _ -> false
+
   (* between two instructions of a block *)
   let is_instr_start (lhs, rhs, _, pos) =
     match lhs, pos with
@@ -409,7 +432,7 @@ module Recovery = struct
       match accept Parser.[SEMICOLON; RPAREN; RBRACKET; RBRACE; LBRACE] with
       | Some x -> GenerateToken x
       | None ->
-          if expects_block productions then lbrace ()
+          if on "block" && expects_block productions then lbrace ()
           else if in_block then GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }
           else if generation_streak <= 1 then GenerateHole
           else instr_error () in
@@ -424,7 +447,7 @@ module Recovery = struct
       match accept Parser.[SEMICOLON; RPAREN; RBRACKET] with
       | Some x -> GenerateToken x
       | None ->
-          if expects_block productions then lbrace ()
+          if on "block" && expects_block productions then lbrace ()
           else if next_token.t <> Parser.SEMICOLON && generation_streak <= 1 then
             GenerateToken { s = ";"; t = Parser.SEMICOLON; b = next_token.b; e = next_token.b }
           else if generation_streak <= 2 then GenerateHole
@@ -434,25 +457,46 @@ module Recovery = struct
       | p :: _ when List.exists is_expr productions -> Reduce p
       | _ -> TurnIntoError
     else
+    let in_instr_start = List.exists is_instr_start productions in
     if generation_streak >= 10 then TurnIntoError
     else if List.exists is_item_start productions && next_token.t <> Parser.EOF then TurnIntoError
-    else if reducible_productions = [] && generation_streak = 0 && expects_expr_or_type productions then
+    else if on "hole" && reducible_productions = [] && generation_streak = 0 && expects_expr_or_type productions then
       (* an expression (or a type, a left value) is missing: an error node
          takes its place, as in x = a + ; read x = a + Err; *)
       GenerateHole
     else match next_token.t with
-    | Parser.EOF -> finish_item ()
-    | t when item_restart t next_token.b -> finish_item ()
-    | t when instr_restart t next_token.b -> finish_instr ()
-    | Parser.RBRACE -> finish_instr ()
-    | Parser.LBRACE when generation_streak = 0 ->
-        (* a block that does not fit: what is before it is broken, a hole
-           folds it into an error, after which the block may fit (as the
+    | Parser.EOF when on "eof" -> finish_item ()
+    | t when on "item" && item_restart t next_token.b -> finish_item ()
+    | (Parser.REG | Parser.STACK) when on "comma" && List.exists after_param productions ->
+        (* a parameter of a function after another one: the comma is missing
+           (Mastic does not propose the separator of a list, so the comma
+           is generated here) *)
+        GenerateToken { s = ","; t = Parser.COMMA; b = next_token.b; e = next_token.b }
+    | t when on "header" && List.exists in_header productions
+             && not (List.mem t Parser.[LBRACE; IF; FOR; WHILE; ARRAYINIT; ASSERT; RETURN]) ->
+        (* in the header of a function, a token that does not fit is an
+           error, merged with the header: the body is kept *)
+        (match reducible_productions with p :: _ -> Reduce p | [] -> TurnIntoError)
+    | Parser.RETURN when on "instrstart" && in_instr_start ->
+        (* return ends a function body, not an inner block: close it *)
+        GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }
+    | _ when on "instrstart" && in_instr_start -> TurnIntoError
+    | t when on "instr" && instr_restart t next_token.b -> finish_instr ()
+    | (Parser.RBRACE | Parser.SEMICOLON) when on "close" -> finish_instr ()
+    | Parser.LBRACE when on "lbrace" ->
+        (* a block that does not fit: finish what is before it, or fold it
+           into an error with a hole, after which the block may fit (as the
            body of a function whose header is broken, for instance) *)
-        GenerateHole
+        (match reducible_productions with
+         | p :: _ -> Reduce p
+         | [] ->
+         match accept Parser.[RPAREN; RBRACKET] with
+         | Some x -> GenerateToken x
+         | None -> if generation_streak <= 1 then GenerateHole else TurnIntoError)
     | _ ->
     match reducible_productions with
     | p :: _ when List.exists is_expr productions -> Reduce p
+    | p :: _ when on "reduce" -> Reduce p
     | _ -> TurnIntoError
 end
 

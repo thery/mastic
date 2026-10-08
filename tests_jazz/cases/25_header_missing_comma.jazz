@@ -1,0 +1,4 @@
+fn f(reg u64 x reg u64 z) -> reg u64 {
+  x += z;
+  return x;
+}

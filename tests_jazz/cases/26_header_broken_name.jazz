@@ -1,0 +1,4 @@
+fn (reg u64 x) -> reg u64 {
+  x += 1;
+  return x;
+}

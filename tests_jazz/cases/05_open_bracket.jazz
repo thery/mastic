@@ -1,0 +1,6 @@
+fn f(reg u64 x) -> reg u64 {
+  reg u64 y;
+  y = [:u64 x + 8;
+  y += 3;
+  return y;
+}
