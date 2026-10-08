@@ -86,11 +86,10 @@
 
 (* error tokens, for the error-resilient parser (Mastic): ERROR_TOKEN
    stands for a broken expression, type, left value, instruction or item;
-   INSTR_ERROR_TOKEN only for a broken instruction (or item), and
-   ITEM_ERROR_TOKEN only for a broken item (see Parse.Recovery) *)
+   INSTR_ERROR_TOKEN only for a broken instruction (or item, outside a
+   function), see Parse.Recovery *)
 %token <Mastic.Error.t> ERROR_TOKEN
 %token <Mastic.Error.t> INSTR_ERROR_TOKEN
-%token <Mastic.Error.t> ITEM_ERROR_TOKEN
 %nonassoc COLON QUESTIONMARK
 %left PIPEPIPE
 %left AMPAMP
@@ -534,7 +533,6 @@ top:
 | annotations call_conv? FN e=ERROR_TOKEN body=pfunbody { Syntax.PFunError (e, body) }
 | e=ERROR_TOKEN body=pfunbody { Syntax.PFunError (e, body) }
 | e=INSTR_ERROR_TOKEN { Item.of_token e }
-| e=ITEM_ERROR_TOKEN { Item.of_token e }
 (* -------------------------------------------------------------------- *)
 module_:
 | pfs=loc(top)* EOF

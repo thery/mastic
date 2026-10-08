@@ -74,7 +74,6 @@ module Recovery = struct
     | I.T I.T_INLINE -> "INLINE"
     | I.T I.T_INSTR_ERROR_TOKEN -> "INSTR_ERROR_TOKEN"
     | I.T I.T_INT -> "INT"
-    | I.T I.T_ITEM_ERROR_TOKEN -> "ITEM_ERROR_TOKEN"
     | I.T I.T_LBRACE -> "LBRACE"
     | I.T I.T_LBRACKET -> "LBRACKET"
     | I.T I.T_LE -> "LE"
@@ -224,20 +223,17 @@ module Recovery = struct
     fun _ fmt s -> Format.pp_print_string fmt (name_of_symbol s)
 
   (* INSTR_ERROR_TOKEN is an error that only an instruction (or an item)
-     accepts, ITEM_ERROR_TOKEN one that only an item accepts: Mastic folds
-     the stack into it up to the instruction, or the item, which becomes an
-     error. When Mastic merges errors it rebuilds the token from the merged
-     Mastic.Error.t, so they are marked by a piece Lex "\001" or Lex "\000",
-     which survives the merges. *)
-  let item_marker = "\000"  (* not used *)
+     accepts: Mastic folds the stack into it up to the instruction (or the
+     item, outside a function), which becomes an error. When Mastic merges
+     errors it rebuilds the token from the merged Mastic.Error.t, so it is
+     marked by a piece Lex "\001", which survives the merges. *)
   let instr_marker = "\001"
   let has_marker m e = List.exists (fun x -> Mastic.Error.unloc x = Mastic.Error.Lex m) e
   let match_error_token = function
-    | Parser.ERROR_TOKEN x | Parser.INSTR_ERROR_TOKEN x | Parser.ITEM_ERROR_TOKEN x -> Some x
+    | Parser.ERROR_TOKEN x | Parser.INSTR_ERROR_TOKEN x -> Some x
     | _ -> None
   let build_error_token t =
-    if has_marker item_marker t then Parser.ITEM_ERROR_TOKEN t
-    else if has_marker instr_marker t then Parser.INSTR_ERROR_TOKEN t
+    if has_marker instr_marker t then Parser.INSTR_ERROR_TOKEN t
     else Parser.ERROR_TOKEN t
   let is_eof_token = function Parser.EOF -> true | _ -> false
 
