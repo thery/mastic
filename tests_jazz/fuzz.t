@@ -27,41 +27,61 @@ Fuzzing, as in test/: a character is replaced by ';', ' ' or '$'
   measure: precision 90.0% (9/10) recall 60.0% (9/15) F1 72.0%
   
   fuzzed input #2: fn ;(reg u64 x) -> reg u64 {
-  error:              ^^^^^^^^^^^^^^^^^^^^^^^   recovered syntax error
+  error:              ^^^^^^^^^^^^^^^ ^^^^^^^^  recovered syntax error
                      x = x + 2 * 3;
                      return x;
                    }
+  error: line 1, column 3: completed with _
+  error: line 1, column 3: completed with {
+  error: line 1, column 27: completed with _
+  error: line 1, column 27: completed with _
+  error: line 3, column 2: completed with }
   ast:
-    fn Err«;(reg u64 x) -> reg u64»
-      x = (+ x (* 2 3))
+    fn Err«»
+      Err«;(reg u64 x) ->»
+      Err«reg u64 »
+        x = (+ x (* 2 3))
       return x
   note: not a subterm
-  measure: precision 90.0% (9/10) recall 60.0% (9/15) F1 72.0%
+  measure: precision 75.0% (9/12) recall 60.0% (9/15) F1 66.7%
   
   fuzzed input #3: fn f(reg ;64 x) -> reg u64 {
-  error:              ^^^^^^^^^^^^^^^^^^^^^^^   recovered syntax error
+  error:              ^^^^^^^^^^^^^^^ ^^^^^^^^  recovered syntax error
                      x = x + 2 * 3;
                      return x;
                    }
   error: line 1, column 9: completed with _
+  error: line 1, column 9: completed with _
+  error: line 1, column 9: completed with {
+  error: line 1, column 27: completed with _
+  error: line 1, column 27: completed with _
+  error: line 3, column 2: completed with }
   ast:
-    fn Err«f(reg ;64 x) -> reg u64»
-      x = (+ x (* 2 3))
+    fn Err«f(reg »
+      Err«;64 x) ->»
+      Err«reg u64 »
+        x = (+ x (* 2 3))
       return x
   note: not a subterm
-  measure: precision 90.0% (9/10) recall 60.0% (9/15) F1 72.0%
+  measure: precision 75.0% (9/12) recall 60.0% (9/15) F1 66.7%
   
   fuzzed input #4: fn f(reg u64 x);-> reg u64 {
-  error:              ^^^^^^^^^^^^^^^^^^^^^^^   recovered syntax error
+  error:                          ^^^ ^^^^^^^^  recovered syntax error
                      x = x + 2 * 3;
                      return x;
                    }
+  error: line 1, column 15: completed with {
+  error: line 1, column 27: completed with _
+  error: line 1, column 27: completed with _
+  error: line 3, column 2: completed with }
   ast:
-    fn Err«f(reg u64 x);-> reg u64»
-      x = (+ x (* 2 3))
+    fn f(reg u64 x)
+      Err«;->»
+      Err«reg u64 »
+        x = (+ x (* 2 3))
       return x
   note: not a subterm
-  measure: precision 90.0% (9/10) recall 60.0% (9/15) F1 72.0%
+  measure: precision 86.7% (13/15) recall 86.7% (13/15) F1 86.7%
   
   fuzzed input #5: fn f(reg u64 x) -> reg u64 {
                      x = x + 2 * 3;
@@ -203,35 +223,41 @@ Fuzzing, as in test/: a character is replaced by ';', ' ' or '$'
   
   fuzzed input #4: param int N = 4;
                    fn g(reg u;4 a) {
-  error:              ^^^^^^^^^^^^   recovered syntax error
+  error:              ^^^^^^^^^ ^^   recovered syntax error
                      if (a > N) {
                        a = [:u64 a + 8];
                      }
                    }
   error: line 2, column 10: completed with _
+  error: line 2, column 10: completed with _
+  error: line 2, column 10: completed with {
+  error: line 7, column 0: completed with }
   ast:
     param int N = 4
-    fn Err«g(reg u;4 a)»
-      if (> a N)
-        a = [:u64 (+ a 8)]
+    fn Err«g(reg u»
+      Err«;4»
+      Err«a)»
+        if (> a N)
+          a = [:u64 (+ a 8)]
   note: not a subterm
-  measure: precision 93.3% (14/15) recall 77.8% (14/18) F1 84.8%
+  measure: precision 82.4% (14/17) recall 77.8% (14/18) F1 80.0%
   
   fuzzed input #5: param int N = 4;
                    fn g(reg u64 a) ;
-  error:              ^^^^^^^^^^^^^^ recovered syntax error
+  error:                           ^ recovered syntax error
                      if (a > N) {
                        a = [:u64 a + 8];
                      }
                    }
-  error: line 3, column 2: completed with {
+  error: line 2, column 16: completed with {
   ast:
     param int N = 4
-    fn Err«g(reg u64 a) ;»
+    fn g(reg u64 a)
+      Err«;»
       if (> a N)
         a = [:u64 (+ a 8)]
   note: not a subterm
-  measure: precision 93.3% (14/15) recall 77.8% (14/18) F1 84.8%
+  measure: precision 100.0% (18/18) recall 100.0% (18/18) F1 100.0%
   
   fuzzed input #6: param int N = 4;
                    fn g(reg u64 a) {

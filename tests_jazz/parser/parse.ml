@@ -353,18 +353,6 @@ module Recovery = struct
       | Some (I.X (I.N (I.N_pblock | I.N_pblock_r | I.N_pfunbody))) -> true
       | _ -> false) productions
 
-  (* in the header of a function: its parameters, its result types, or
-     after a broken header (fn Err . { ... }) *)
-  let in_header (lhs, rhs, _, pos) =
-    match lhs with
-    | I.X (I.N (I.N_separated_nonempty_list_COMMA_annot_pparamdecl_ | I.N_annot_pparamdecl
-               | I.N_pparamdecl_empty_ | I.N_separated_nonempty_list_empty_var_
-               | I.N_annot_stor_type | I.N_separated_nonempty_list_COMMA_annot_stor_type_
-               | I.N_pfundef)) -> true
-    | I.X (I.N I.N_top) ->
-        (match List.nth_opt rhs pos with Some (I.X (I.N I.N_pfunbody)) -> true | _ -> false)
-    | _ -> false
-
   (* after a parameter of a function *)
   let after_param (lhs, _, _, pos) =
     match lhs, pos with
@@ -468,11 +456,6 @@ module Recovery = struct
            (Mastic does not propose the separator of a list, so the comma
            is generated here) *)
         GenerateToken { s = ","; t = Parser.COMMA; b = next_token.b; e = next_token.b }
-    | t when on "header" && List.exists in_header productions
-             && not (List.mem t Parser.[LBRACE; IF; FOR; WHILE; ARRAYINIT; ASSERT; RETURN]) ->
-        (* in the header of a function, a token that does not fit is an
-           error, merged with the header: the body is kept *)
-        (match reducible_productions with p :: _ -> Reduce p | [] -> TurnIntoError)
     | Parser.RETURN when on "instrstart" && in_instr_start ->
         (* return ends a function body, not an inner block: close it *)
         GenerateToken { s = "}"; t = Parser.RBRACE; b = next_token.b; e = next_token.b }

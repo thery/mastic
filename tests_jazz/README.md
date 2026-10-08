@@ -323,21 +323,11 @@ error: line 1, column 15: completed with ,
 ast:   fn f(reg u64 x, reg u64 y) -> reg u64
 ```
 
-**5. In the header of a function, a token that does not fit is an error**
-(`header`): reduce if possible, else `TurnIntoError`. The error grows until
-it is accepted after `fn` (`PFunError`), and the body is kept:
-
-```
-input: fn f(reg ;64 x) -> reg u64 {
-ast:   fn Err«f(reg ;64 x) -> reg u64»
-         x = (+ x (* 2 3))
-```
-
-**6. Between two instructions** (`instrstart`): `return` closes the inner
+**5. Between two instructions** (`instrstart`): `return` closes the inner
 block it is in (a `return` only ends a function body); any other token that
 does not fit becomes an error, which is an instruction error.
 
-**7. At a token that begins an instruction: finish the instruction**
+**6. At a token that begins an instruction: finish the instruction**
 (`instr`). A token begins an instruction when it is the first of its line,
 or a keyword that only begins instructions (`if`, `for`, `while`, `assert`,
 `ArrayInit`, `return`). Finishing an instruction is as finishing an item,
@@ -360,10 +350,10 @@ ast:                                       error: line 3, column 4: completed wi
                                                return x
 ```
 
-**8. A `;` or a `}` that does not fit finishes the instruction**
+**7. A `;` or a `}` that does not fit finishes the instruction**
 (`close`): `x = (x + 1;` reads `x = (x + 1);`.
 
-**9. A `{` that does not fit** (`lbrace`): reduce, or insert `)` or `]`,
+**8. A `{` that does not fit** (`lbrace`): reduce, or insert `)` or `]`,
 else a hole, which folds what is before the block into an error, after
 which the block fits (`PIErrorBlock`, `PFunError`):
 
@@ -375,7 +365,7 @@ ast:     Err«for = 0 to 4»
            x += 1
 ```
 
-**10. Otherwise: as in Elpi.** Reduce inside an expression, else reduce
+**9. Otherwise: as in Elpi.** Reduce inside an expression, else reduce
 anything (`reduce`), else turn the token into an error.
 
 Two more changes are not in `handle_unexpected_token`, but the strategy
@@ -468,8 +458,121 @@ Where the measure is printed:
 
 ## 9. Results
 
-RESULTS
+The corpus (`corpus/`, each project with its license and origin): the 1015
+`.jazz` files of the jasmin repository that parse (tests, examples), and the
+29 files of goldbachJasmin: 1044 files, about 30 000 lines, 59 566 edits.
+
+|                                      | strategy of the Elpi PR | this strategy |
+|--------------------------------------|------------------------:|--------------:|
+| crashes                              | 14 850                  | **0**         |
+| precision                            | 99.26 %                 | **99.41 %**   |
+| recall                               | 72.07 %                 | **96.94 %**   |
+| F1                                   | 83.51 %                 | **98.16 %**   |
+| errors covering a whole item, per edit | 0.29                  | **0.13**      |
+| characters inside errors, per edit   | 43.1                    | **12.4**      |
+
+The first column (`baseline.txt`, `JAZZ_BASELINE=1`) is the strategy of the
+first version of the Elpi work (LPCIC/elpi#385: reduce inside an
+expression, otherwise turn the token into an error; no token is ever
+inserted; the lexer raises), run with the same grammar and error nodes.
+Most of its crashes are Mastic's "too many loops" at the end of the file:
+a file cut inside a function leaves blocks open, and turning the end of
+file into an error does not close them (6 882 of the 10 368 truncated
+files crash). Details per kind of edit are in `baseline.txt` and
+`improved.txt`.
+
+**What each rule brings.** Every rule of section 6 can be turned off
+(`JAZZ_OFF=rule1,rule2`); the F1 of the whole corpus without each one (the
+full strategy has 98.16 %; these runs were made with the header rule below
+still in, at 98.07 %, except for `comma` and `reduce`):
+
+| rule turned off | F1 without it | |
+|---|---:|---|
+| `eof` (finish the item at the end of the file) | 90.51 % | and 6 200 crashes |
+| `close` (`;` and `}` finish an instruction) | 97.70 % | |
+| `instr` (restart at the beginning of a line) | 97.78 % | |
+| `lbrace` (a `{` that does not fit) | 97.85 % | |
+| `item` (restart at an item keyword or column 0) | 97.93 % | |
+| `block` (insert `{` where a block is expected) | 98.01 % | |
+| `hole` (a missing expression, type, left value) | 98.04 % | |
+| `instrstart` (between two instructions) | 98.05 % | |
+| `comma` (between parameters), measured on the final strategy | 98.15 % | |
+| `reduce` (reduce outside expressions), measured on the final strategy | 98.16 % | recall 96.93 % instead of 96.94 %, kept because `comma` needs it |
+
+One rule was tried and removed because it lowered F1 (98.16 % without it,
+98.07 % with it): in the header of a function, turn every token that does
+not fit into an error merged with the header. It helps when the header is
+really broken, but it also swallows a stray `;` after the header, and the
+instruction after it, into the header error.
+
+The changes of the grammar and of the automaton cannot be turned off at
+run time; their effect was measured while they were added (F1 on the 1015
+files of jasmin, 57 932 edits, each line adding to the previous one):
+
+| change | F1 |
+|---|---:|
+| the first strategy (rules `hole`, `eof`, `item`, `instr`, closing blocks), with `PFunError` after `fn` and `--canonical` | 96.55 % |
+| `block` (insert `{`), `}` finishes an instruction | 97.29 % |
+| `ERROR_TOKEN pfunbody` is a function, a `{` that does not fit makes a hole | 97.32 % |
+| the type of a global does not accept an error (no more conflict) | 97.42 % |
+| `PIErrorBlock` | 97.44 % |
+| `instrstart`, `;` finishes an instruction, `lbrace` completed | 97.64 % |
+
+and the canonical automaton, on the final strategy and the whole corpus:
+98.16 % with `--canonical`, 96.32 % without (recall 96.94 % against
+93.39 %; with Menhir's default automaton a stray `}` at the top level
+folds the whole file into one error).
+
+**The cases of `cases.t`** (F1 of each, against its good program; the
+baseline crashes on 15 of the 32):
+
+| case | F1 | case | F1 |
+|---|---:|---|---:|
+| 01_op_no_rhs | 100.0 % | 17_decl_no_var | 90.9 % |
+| 02_op_no_lhs | 100.0 % | 18_lex_dollar | 92.7 % |
+| 03_open_paren | 90.9 % | 19_lex_backquote | 100.0 % |
+| 04_close_paren | 92.7 % | 20_comment_unclosed | 100.0 % |
+| 05_open_bracket | 100.0 % | 21_string_unclosed | 88.9 % |
+| 06_missing_semicolon | 95.5 % | 22_eof_in_body | 84.2 % |
+| 07_missing_semicolon_eol | 95.5 % | 23_eof_in_if | 100.0 % |
+| 08_double_semicolon | 100.0 % | 24_eof_in_header | 54.5 % |
+| 09_missing_close_brace_if | 91.3 % | 25_header_missing_comma | 100.0 % |
+| 10_missing_open_brace_if | 95.7 % | 26_header_broken_name | 58.8 % |
+| 11_extra_close_brace | 75.7 % | 27_param_no_value | 100.0 % |
+| 12_missing_fn_close | 92.9 % | 28_global_broken | 97.8 % |
+| 13_if_no_condition | 100.0 % | 29_call_unclosed | 100.0 % |
+| 14_for_no_var | 90.9 % | 30_two_errors | 94.4 % |
+| 15_while_no_paren | 100.0 % | 31_namespace_unclosed | 85.7 % |
+| 16_decl_no_type | 94.7 % | 32_annotation_broken | 100.0 % |
+
+The mean is 92.6 %.
 
 ## 10. What remains to do
 
-REMAINS
+The low scores of `cases.t` and the worst edits of the corpus show what
+the strategy does not handle yet:
+
+- **a broken function header**: `fn (reg u64 x)` (no name, 58.8 %) or a
+  file cut inside the parameters (54.5 %) make the header one error: the
+  function keeps its body, but its name, parameters and result types are
+  lost;
+- **an extra `}`** (`11_extra_close_brace`, 75.7 %) closes the function
+  early, and the instructions after it are read as broken items; only a
+  guess based on indentation could tell which `}` is too many. The same for
+  a deleted `fn …` line: its body is read at the top level and lost;
+- **an unclosed namespace** (`31_namespace_unclosed`): the next items are
+  read inside it, which is valid; the same for an unclosed block, whose end
+  is found at the next `}`;
+- **a missing variable**, `reg u64 ;` or `for = 0 to N`: names have no
+  error node, so the whole declaration or the head of the loop is an error;
+- **a deleted `/*`**: the text of the comment is read as code, which lowers
+  precision (and a deleted `*/` makes the comment swallow the code).
+
+And some limits of the method:
+
+- the measure aligns the two programs on a single damaged region: with two
+  distant errors, everything between them is ignored;
+- `require` is not followed (only parsing is tested);
+- the baseline is a strategy for another grammar, not a strategy anybody
+  would choose for Jasmin: its crashes say more about Mastic at the end of
+  the file than about the strategy.
