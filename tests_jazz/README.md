@@ -405,6 +405,10 @@ error: ^^          recovered syntax error
        }
 error: invalid char: `$' lexical error
 error: unterminated comment lexical error
+error: line 4, column 2: completed with ;
+error: line 4, column 2: completed with _
+error: line 4, column 2: completed with _
+error: line 4, column 2: completed with (error)
 ast:
   fn f(reg u64 x) -> reg u64
     x = Err«x $ 1»
@@ -460,7 +464,7 @@ Where the measure is printed:
 
 The corpus (`corpus/`, each project with its license and origin): the 1015
 `.jazz` files of the jasmin repository that parse (tests, examples), and the
-29 files of goldbachJasmin: 1044 files, about 30 000 lines, 59 566 edits.
+29 files of goldbachJasmin: 1044 files, about 32 000 lines, 59 566 edits.
 
 |                                      | strategy of the Elpi PR | this strategy |
 |--------------------------------------|------------------------:|--------------:|
