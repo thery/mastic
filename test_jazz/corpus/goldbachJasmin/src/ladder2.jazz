@@ -1,0 +1,657 @@
+/* ladder2.jazz -- the ladder of ladder.jazz with TWO candidates tested at
+   once, as proth_ladder.c does (NWAY = 2): the descent hands its next two
+   survivors to certified2, whose witness test proth_pass2 advances the two
+   Montgomery chains in step -- one multiplication of the first candidate,
+   one of the second, the states resting on the stack in between -- so that
+   the processor overlaps the two dependency chains (one chain alone is
+   bound by the latency of its ~110 dependent operations).  The result is
+   that of ladder.jazz: the first candidate that passes, in descending
+   order, with the same square-test count.
+
+   Shares with ladder.jazz everything but the walk: the sieve, the witness
+   tables, bls_square_ok, and the arithmetic of proth_mont.jazz.  Export:
+   ladder_block2, the interface of ladder_block.  Proved: ec/mont2.ec (the
+   lazy arithmetic, proth_pass2) and ec/walk2.ec (ladder_block2_thm, the
+   statement of ladder_block_thm); ec/ladder.ec is extracted from this file. */
+
+require "ladder.jazz"
+
+/* the words of a candidate's modulus array: nn[0..2] = [n0, n1, ninv] as
+   proth_mont.jazz reads them, then the small-witness path (below):
+   nn[3] = inv, nn[4] = sh, nn[5] = fast (1 if the path applies), nn[6] = a */
+param int NNW = 8;
+param int NN_INV = 3;
+param int NN_SH = 4;
+param int NN_FAST = 5;
+param int NN_A = 6;
+
+/* the Montgomery data of N = h*2^n + 1 (the first half of proth_pass):
+   nn = [n0, n1, ninv], and R mod N and a*R mod N as register pairs */
+inline fn mont_setup(reg u64 h n a, reg ptr u64[NNW] nn)
+  -> reg ptr u64[NNW], reg u64[NLIMBS], reg u64[NLIMBS] {
+  reg u64[NLIMBS] r x s q;
+  reg u64 n0 n1 v t k;
+  reg bool cf;
+  stack u64 s_a;
+
+  s_a = a;
+  t = n;
+  n0 = h;
+  n0 = n0 << (t & 63);
+  t = 64;
+  t -= n;
+  n1 = h;
+  n1 = n1 >> (t & 63);
+  n0 += 1;
+  v = n0;
+  k = 5;
+  while (k != 0) {
+    t = n0;
+    t *= v;
+    t = -t;
+    t += 2;
+    v *= t;
+    k -= 1;
+  }
+  v = -v;
+  nn[0] = n0;
+  nn[1] = n1;
+  nn[2] = v;
+  /* the small-witness path applies to 2^64 <= N < 2^122 (n1 in [1, 2^58)):
+     sh = bitlen(N) - 12, so that N >> sh has 12 bits and a * x >> sh at
+     most 18, and inv = floor((2^64 - 1) / (N >> sh + 1)), one division */
+  t = s_a;
+  nn[NN_A] = t;
+  k = 0;
+  nn[NN_FAST] = k;
+  if (n1 != 0) {
+    t = n1;
+    t = t >> 58;
+    if (t == 0) {
+      k = 1;
+      nn[NN_FAST] = k;
+      t = top_bit(n1);                   /* t is the shift count of this function */
+      t += 53;                           /* sh = 65 + top - 12 */
+      nn[NN_SH] = t;
+      v = n0;
+      v = v >> (t & 63);                 /* sh < 64: (n1 << (64 - sh)) | (n0 >> sh) */
+      k = n1;
+      k = k >> (t & 63);                 /* sh >= 64: n1 >> (sh - 64) */
+      v = k if (t >= 64);
+      k = n1;
+      x[0] = 0;
+      k = x[0] if (t >= 64);             /* a cmov takes no immediate */
+      t = -t;
+      t += 64;
+      k = k << (t & 63);
+      v |= k;
+      v += 1;                            /* the divisor d = (N >> sh) + 1 */
+      k = 18446744073709551615;
+      k = k / v;
+      nn[NN_INV] = k;
+    }
+  }
+  /* R mod N: 2^b - N (below N) doubled 128 - b times, b the bit length of
+     N; for N < 2^64 (tiny inputs) 1 doubled 128 times */
+  if (n1 != 0) {
+    t = top_bit(n1);                     /* b = 65 + t */
+    k = 63;
+    k -= t;                              /* 128 - b doublings */
+    t += 1;
+    x[1] = 1;
+    x[1] = x[1] << (t & 63);             /* 2^b on two limbs: (2^(t+1), 0) */
+    r[0] = n0;
+    r[0] = !r[0];
+    r[1] = n1;
+    r[1] = !r[1];
+    cf, r[0] += 1;
+    r[1] = adc_zero(r[1], cf);           /* 2^128 - N */
+    r[1] += x[1];                        /* 2^b - N modulo 2^128 */
+  } else {
+    r[0] = 1;
+    r[1] = 0;
+    k = 128;
+  }
+  while (k != 0) {
+    q = add_mod(r, r, nn[0:NLIMBS + 1]);
+    r = q;
+    k -= 1;
+  }
+  t = s_a;
+  t = t << 59;
+  x[0] = 0;
+  x[1] = 0;
+  k = 5;
+  while (k != 0) {
+    q = add_mod(x, x, nn[0:NLIMBS + 1]);
+    x = q;
+    s = add_mod(x, r, nn[0:NLIMBS + 1]);
+    cf, t += t;
+    x[0] = s[0] if cf;
+    x[1] = s[1] if cf;
+    k -= 1;
+  }
+  return nn, r, x;
+}
+
+/* ---- the lazy arithmetic of the chains ------------------------------------
+   Inputs and outputs below 2N instead of N (4N < R since N < 2^125): the
+   product of two values below 2N is below 4N^2 < N*R, the reduction gives
+   (t + mN)/R < 4N^2/R + N < 2N, so the conditional subtraction of csub_mod
+   is paid once, at the end of the chain, not at every step.  The square
+   does three products instead of four (the cross one added twice). */
+
+/* r = a * a on four limbs */
+inline fn sqrn(reg u64[NLIMBS] a) -> reg u64[2 * NLIMBS] {
+  reg u64[2 * NLIMBS] r;
+  reg u64[3] x;
+  reg u64 hi lo;
+  hi, lo = mul_wide(a[0], a[0]);
+  r[0] = lo;
+  x[1] = hi;
+  x[2] = 0;
+  x[0] = 0;
+  hi, lo = mul_wide(a[0], a[1]);
+  x = addacc3(hi, lo, x, 1);
+  x = addacc3(hi, lo, x, 1);
+  r[1] = x[1];
+  x[1] = 0;
+  hi, lo = mul_wide(a[1], a[1]);
+  x = addacc3(hi, lo, x, 2);
+  r[2] = x[2];
+  r[3] = x[0];
+  return r;
+}
+
+/* rdcn of proth_mont.jazz without the final csub_mod: t / R mod N below 2N */
+inline fn rdcn_lazy(reg u64[2 * NLIMBS] t, reg ptr u64[NNW] nn) -> reg u64[NLIMBS] {
+  inline int i k;
+  reg u64[NLIMBS] r m;
+  reg u64[3] x;
+  reg u64 hi lo q w;
+  reg bool cf;
+  x[0] = 0;
+  x[1] = 0;
+  x[2] = 0;
+  for k = 0 to NLIMBS {
+    for i = 0 to k {
+      w = nn[k - i];
+      hi, lo = mul_wide(m[i], w);
+      x = addacc3(hi, lo, x, k);
+    }
+    x = addacc1(t[k], x, k);
+    w = nn[NLIMBS];
+    q = x[k % 3];
+    q *= w;
+    m[k] = q;
+    w = nn[0];
+    hi, lo = mul_wide(q, w);
+    x = addacc3(hi, lo, x, k);
+  }
+  for k = NLIMBS to 2 * NLIMBS - 1 {
+    for i = k - NLIMBS + 1 to NLIMBS {
+      w = nn[k - i];
+      hi, lo = mul_wide(m[i], w);
+      x = addacc3(hi, lo, x, k);
+    }
+    x = addacc1(t[k], x, k);
+    r[k - NLIMBS] = x[k % 3];
+    x[k % 3] = 0;
+  }
+  cf, x[(2 * NLIMBS - 1) % 3] += t[2 * NLIMBS - 1];
+  r[NLIMBS - 1] = x[(2 * NLIMBS - 1) % 3];
+  return r;
+}
+
+inline fn mont_sqr_lazy(reg u64[NLIMBS] a, reg ptr u64[NNW] nn) -> reg u64[NLIMBS] {
+  reg u64[2 * NLIMBS] t;
+  reg u64[NLIMBS] r;
+  t = sqrn(a);
+  r = rdcn_lazy(t, nn);
+  return r;
+}
+
+inline fn mont_mul_lazy(reg u64[NLIMBS] a b, reg ptr u64[NNW] nn) -> reg u64[NLIMBS] {
+  reg u64[2 * NLIMBS] t;
+  reg u64[NLIMBS] r;
+  t = muln(a, b);
+  r = rdcn_lazy(t, nn);
+  return r;
+}
+
+/* x * a mod N, below 2N, for x below 2N and the small witness a < 32, when
+   the path applies (nn[NN_FAST]): t = a * x < 64 N < 2^(sh + 64) on two
+   words; q = floor((t >> sh) * inv / 2^120) is floor(t / N) or one less
+   (the error of the two truncations is below 65 * 2^sh / N < 2^-50), so
+   t - q N is below 2N.  The subtraction is an addition of the complement:
+   the borrow chain `-= y - cf' is x86-only. */
+inline fn mul_small_lazy(reg u64[NLIMBS] x, reg ptr u64[NNW] nn) -> reg u64[NLIMBS] {
+  reg u64[NLIMBS] r;
+  reg u64 w hi lo t0 t1 tp c q m0 m1 fl fh zero;
+  reg bool cf;
+  /* on x86 the halves of a product come out of RDX:RAX, so each one is
+     moved before the next multiplication, as muln does */
+  w = nn[NN_A];
+  hi, lo = mul_wide(x[0], w);
+  t0 = lo;
+  t1 = hi;
+  hi, lo = mul_wide(x[1], w);           /* hi = 0: a * x1 < 2^63 */
+  t1 += lo;                             /* no carry out: t < 2^127 */
+  c = nn[NN_SH];                        /* c is the shift count, sh then 64 - sh */
+  fl = t0;
+  fl = t1 if (c >= 64);                 /* t >> sh: the word below, the word above */
+  fh = t1;
+  zero = 0;
+  fh = zero if (c >= 64);
+  tp = fl;
+  tp = tp >> (c & 63);
+  c = -c;
+  c += 64;
+  fh = fh << (c & 63);                  /* fh = 0 when the count would be 64 */
+  tp |= fh;                             /* t >> sh, below 2^18 */
+  w = nn[NN_INV];
+  hi, lo = mul_wide(tp, w);
+  q = hi;                               /* floor(t / N) or one less */
+  w = nn[0];
+  hi, lo = mul_wide(q, w);
+  m0 = lo;
+  m0 = !m0;                             /* x86's NOT is in place: never on RAX itself */
+  m1 = hi;
+  w = nn[1];
+  hi, lo = mul_wide(q, w);
+  m1 += lo;                             /* q N on two words (it is below t) */
+  m1 = !m1;
+  cf, m0 += 1;
+  m1 = adc_zero(m1, cf);                /* -q N modulo 2^128 */
+  r[0] = t0;
+  cf, r[0] += m0;
+  r[1] = t1;
+  cf, r[1] += m1 + cf;
+  return r;
+}
+
+/* the witness test of proth_pass on two candidates at once, hA >= hB >= 1
+   (the descent hands them in decreasing order): both chains start from
+   R mod N at the top bit of hA and read their bits from there, so the
+   second one squares R mod N -- a fixed point -- over the bits it lacks.
+   The two moduli stay behind their own pointers for the whole run: a reg
+   ptr is a value, a write through it reaches the stack array only by a
+   copy back (see ladder.jazz), so the pointer is never taken again. */
+fn proth_pass2(reg u64 hA hB n aA aB) -> reg u64, reg u64 {
+  stack u64[NNW] nnA_s nnB_s;
+  stack u64[NLIMBS] rmA_s rmB_s arA_s arB_s accA_s accB_s;
+  stack u64 s_hA s_hB s_n s_aB vA_s vB_s;
+  reg ptr u64[NNW] nnA nnB;
+  reg u64[NLIMBS] r s q rm ar;
+  reg u64 k t v w top resA resB zero;
+  reg bool cf;
+
+  s_hA = hA; s_hB = hB; s_n = n; s_aB = aB;
+  nnA = nnA_s;
+  nnA, rm, ar = mont_setup(hA, n, aA, nnA);
+  rmA_s = rm; arA_s = ar; accA_s = rm;
+  hB = s_hB; n = s_n; aB = s_aB;
+  nnB = nnB_s;
+  nnB, rm, ar = mont_setup(hB, n, aB, nnB);
+  rmB_s = rm; arB_s = ar; accB_s = rm;
+
+  hA = s_hA;
+  top = top_bit(hA);
+  t = 63;
+  t -= top;
+  v = hA;
+  v = v << (t & 63);
+  vA_s = v;
+  v = s_hB;
+  v = v << (t & 63);
+  vB_s = v;
+  k = top;
+  k += 1;
+  while (k != 0) {
+    r = accA_s;
+    q = mont_sqr_lazy(r, nnA);
+    v = vA_s;
+    cf, v += v;
+    vA_s = v;
+    if (cf) {
+      w = nnA[NN_FAST];
+      if (w != 0) {
+        r = mul_small_lazy(q, nnA);
+      } else {
+        s = arA_s;
+        r = mont_mul_lazy(q, s, nnA);
+      }
+      q = r;
+    }
+    accA_s = q;
+    r = accB_s;
+    q = mont_sqr_lazy(r, nnB);
+    v = vB_s;
+    cf, v += v;
+    vB_s = v;
+    if (cf) {
+      w = nnB[NN_FAST];
+      if (w != 0) {
+        r = mul_small_lazy(q, nnB);
+      } else {
+        s = arB_s;
+        r = mont_mul_lazy(q, s, nnB);
+      }
+      q = r;
+    }
+    accB_s = q;
+    k -= 1;
+  }
+  k = s_n;
+  k -= 1;
+  while (k != 0) {
+    r = accA_s;
+    q = mont_sqr_lazy(r, nnA);
+    accA_s = q;
+    r = accB_s;
+    q = mont_sqr_lazy(r, nnB);
+    accB_s = q;
+    k -= 1;
+  }
+  zero = 0;
+  r = accA_s;
+  r = csub_mod(r, nnA[0:NLIMBS + 1]);                /* the lazy chain ends below 2N */
+  s = rmA_s;
+  q = add_mod(r, s, nnA[0:NLIMBS + 1]);
+  q[0] |= q[1];
+  resA = 1;
+  resA = zero if (q[0] != 0);
+  r = accB_s;
+  r = csub_mod(r, nnB[0:NLIMBS + 1]);
+  s = rmB_s;
+  q = add_mod(r, s, nnB[0:NLIMBS + 1]);
+  q[0] |= q[1];
+  resB = 1;
+  resB = zero if (q[0] != 0);
+  return resA, resB;
+}
+
+/* certified on two candidates hA > hB: 1 if h0 + hA is a certified prime,
+   else 2 if h0 + hB is, else 0; the square-test rejections counted in the
+   order of certified (the second candidate is examined only when the first
+   is not certified).  A candidate without a witness runs its chain with
+   a = 3 and is discarded. */
+fn certified2(reg u64 h0 hA hB n, reg ptr u64[20] wt, reg u64 rej) -> reg u64, reg u64 {
+  reg u64 aA aB hhA hhB okA okB which t zero;
+  stack u64 s_rej s_hhA s_hhB s_n s_aA s_aB s_okB;
+  stack ptr u64[20] wt_sp;
+
+  which = 0;
+  hhA = h0;
+  hhA += hA;
+  hhB = h0;
+  hhB += hB;
+  s_rej = rej; s_hhA = hhA; s_hhB = hhB; s_n = n; wt_sp = wt;
+  aA = witness(hhA, n, wt);
+  s_aA = aA;
+  hhB = s_hhB; n = s_n; wt = wt_sp;
+  aB = witness(hhB, n, wt);
+  s_aB = aB;
+  aA = s_aA;
+  t = aA;
+  t |= aB;
+  if (t != 0) {
+    t = 3;
+    aA = t if (aA == 0);
+    aB = t if (aB == 0);
+    hhA = s_hhA; hhB = s_hhB; n = s_n;
+    okA, okB = proth_pass2(hhA, hhB, n, aA, aB);
+    zero = 0;
+    aA = s_aA;
+    okA = zero if (aA == 0);
+    aB = s_aB;
+    okB = zero if (aB == 0);
+    s_okB = okB;
+    if (okA != 0) {
+      hhA = s_hhA; n = s_n;
+      okA = bls_square_ok(hhA, n);
+      if (okA != 0) {
+        which = 1;
+      } else {
+        rej = s_rej;
+        rej += 1;
+        s_rej = rej;
+      }
+    }
+    if (which == 0) {
+      okB = s_okB;
+      if (okB != 0) {
+        hhB = s_hhB; n = s_n;
+        okB = bls_square_ok(hhB, n);
+        if (okB != 0) {
+          which = 2;
+        } else {
+          rej = s_rej;
+          rej += 1;
+          s_rej = rej;
+        }
+      }
+    }
+  }
+  rej = s_rej;
+  return which, rej;
+}
+
+/* search with the survivors tested two at a time; the last one alone, by
+   certified, when the descent reaches low with one in hand */
+fn search2(reg u64 low top h0 n np, reg ptr u64[4 * NP] sp, reg ptr u64[20] wt, reg u64 rej)
+  -> reg u64, reg u64, reg u64 {
+  reg u64 h hA hB cnt win win_lo found which bit t lo z stop;
+  stack u64 s_low s_h0 s_n s_np s_win s_wlo s_h s_hA s_hB s_cnt;
+  stack ptr u64[4 * NP] sp_sp;
+  stack ptr u64[20] wt_sp;
+  s_low = low; s_h0 = h0; s_n = n; s_np = np;
+  found = 0;
+  cnt = 0;
+  hA = 0;
+  hB = 0;
+  h = top;
+  z = 0;
+  lo = h;
+  lo -= WIN - 1;
+  lo = z if (h < WIN - 1);
+  s_h = h; s_wlo = lo; sp_sp = sp; wt_sp = wt; s_cnt = cnt; s_hA = hA;
+  np = s_np;
+  win = sieve_window(lo, np, sp);
+  h = s_h; win_lo = s_wlo; sp = sp_sp; wt = wt_sp; cnt = s_cnt; hA = s_hA;
+  stop = s_low;
+  while (h > stop) {
+    if (h < win_lo) {
+      z = 0;
+      lo = h;
+      lo -= WIN - 1;
+      lo = z if (h < WIN - 1);
+      s_h = h; s_wlo = lo; sp_sp = sp; wt_sp = wt; s_cnt = cnt; s_hA = hA;
+      np = s_np;
+      win = sieve_window(lo, np, sp);
+      h = s_h; win_lo = s_wlo; sp = sp_sp; wt = wt_sp; cnt = s_cnt; hA = s_hA;
+      stop = s_low;
+    }
+    t = h;
+    t -= win_lo;
+    bit = win;
+    bit = bit >> (t & 63);
+    bit &= 1;
+    if (bit != 0) {
+      if (cnt == 0) {
+        hA = h;
+        cnt = 1;
+      } else {
+        hB = h;
+        cnt = 2;
+      }
+    }
+    if (cnt == 2) {
+      s_win = win; s_wlo = win_lo; s_h = h; sp_sp = sp; wt_sp = wt; s_hA = hA; s_hB = hB;
+      h0 = s_h0;
+      n = s_n;
+      which, rej = certified2(h0, hA, hB, n, wt, rej);
+      h = s_h; win = s_win; win_lo = s_wlo; sp = sp_sp; wt = wt_sp; hA = s_hA; hB = s_hB;
+      stop = s_low;
+      cnt = 0;
+      if (which != 0) {
+        found = 1;
+        h = hA;
+        h = hB if (which == 2);
+        stop = h;
+      }
+    }
+    if (found == 0) {
+      h -= 1;
+    }
+  }
+  if (found == 0) {
+    if (cnt == 1) {
+      s_hA = hA;
+      h0 = s_h0;
+      n = s_n;
+      found, rej = certified(h0, hA, n, wt, rej);
+      h = s_hA;
+    }
+  }
+  return found, h, rej;
+}
+
+/* ladder_block of ladder.jazz, on search2 */
+export fn ladder_block2(reg ptr u64[8] out, reg u64 n h0 h1 step) -> reg ptr u64[8] {
+  stack u64[4 * NP] sp_s;
+  reg ptr u64[4 * NP] sp;
+  stack u64[20] wt_s;
+  reg ptr u64[20] wt;
+  stack u64 s_n s_h0 s_span s_del s_np s_rungs s_sum s_rej s_last s_target s_ok;
+  stack ptr u64[8] out_s;
+  reg u64 np span del_h first_h last_h target h found ok rungs sum rej t z c;
+
+  z = 0;
+  out[0] = z; out[1] = z; out[2] = z; out[3] = z; out[4] = z; out[5] = z;
+  /* the output waits on the stack during the work.  A reg ptr array is a
+     value in Jasmin: out_s = out saves its contents, out = out_s restores
+     them, so every write to out must be followed by out_s = out. */
+  out_s = out;
+  ok = 1;
+  /* the arguments */
+  if (n < 2) { ok = 0; }
+  if (n > 31) { ok = 0; }
+  if (h1 <= h0) { ok = 0; }               /* a block has at least one value of h */
+  c = n;
+  c += n;
+  c += 1;
+  z = h1;
+  z = z >> (c & 63);                       /* h1 < 2^(2n+1) */
+  if (z != 0) { ok = 0; }
+  c = n;
+  c += 1;
+  z = step;
+  z = z >> (c & 63);                       /* step >= 2^(n+1): first_h >= 1 */
+  if (z == 0) { ok = 0; }
+  if (ok != 0) {
+    s_n = n; s_h0 = h0;
+    span = h1;
+    span -= h0;
+    s_span = span;
+    c = n;
+    del_h = step;
+    del_h = del_h >> (c & 63);
+    s_del = del_h;
+    c += 1;
+    first_h = step;
+    first_h = first_h >> (c & 63);
+
+    sp = sp_s;
+    sp, np = sieve_primes(sp);
+    s_np = np;
+    n = s_n; h0 = s_h0;
+    sp = sieve_init(sp, n, h0, np);
+    wt = wt_s;
+    n = s_n;
+    wt = witness_init(wt, n);
+
+    rungs = 0; sum = 0; rej = 0;
+    s_rungs = rungs; s_sum = sum; s_rej = rej;
+    last_h = 0;
+    target = first_h;
+    span = s_span;
+    while (target <= span) {
+      s_last = last_h; s_target = target; s_ok = ok;
+      h0 = s_h0; n = s_n; np = s_np; rej = s_rej;
+      found, h, rej = search2(last_h, target, h0, n, np, sp, wt, rej);
+      sp = sp_s; wt = wt_s; last_h = s_last; target = s_target; ok = s_ok;
+      s_rej = rej;
+      if (found != 0) {
+        last_h = h;
+        rungs = s_rungs; rungs += 1; s_rungs = rungs;
+        sum = s_sum; h0 = s_h0; sum += h0; sum += h; s_sum = sum;
+        del_h = s_del;
+        target = last_h;
+        target += del_h;
+      } else {
+        ok = 0;
+        out = out_s;
+        out[5] = target;
+        out_s = out;
+        target = s_span;
+        target += 1;                       /* and leave the loop */
+      }
+      span = s_span;
+    }
+    if (ok != 0) {
+      /* the top: within del_h/2 of the end, else one more descent from
+         span -- also when the walk has no rung (first_h > span), so that
+         the block has one; the rung found must itself be within del_h/2 */
+      del_h = s_del;
+      t = del_h;
+      t = t >> 1;
+      t += last_h;
+      rungs = s_rungs;
+      z = 0;
+      t = z if (rungs == 0);
+      span = s_span;
+      if (t < span) {
+        s_last = last_h; s_ok = ok;
+        h0 = s_h0; n = s_n; np = s_np; rej = s_rej;
+        found, h, rej = search2(last_h, span, h0, n, np, sp, wt, rej);
+        sp = sp_s; wt = wt_s; last_h = s_last; ok = s_ok;
+        s_rej = rej;
+        if (found != 0) {
+          last_h = h;
+          rungs = s_rungs; rungs += 1; s_rungs = rungs;
+          sum = s_sum; h0 = s_h0; sum += h0; sum += h; s_sum = sum;
+          del_h = s_del;
+          t = del_h;
+          t = t >> 1;
+          t += last_h;
+          span = s_span;
+          if (t < span) {
+            ok = 0;
+            out = out_s;
+            out[5] = span;
+            out_s = out;
+          }
+        } else {
+          ok = 0;
+          span = s_span;
+          out = out_s;
+          out[5] = span;
+          out_s = out;
+        }
+      }
+    }
+    rungs = s_rungs; sum = s_sum; rej = s_rej;
+    out = out_s;
+    out[1] = rungs;
+    out[2] = sum;
+    out[3] = rej;
+    h0 = s_h0;
+    h0 += last_h;
+    out[4] = h0;
+    out_s = out;   /* a reg ptr array is a value: what is written must be saved back */
+  }
+  out = out_s;
+  out[0] = ok;
+  return out;
+}

@@ -1,0 +1,7 @@
+u64 g = 5 5;
+u64[2] t = {1, 2};
+fn f(reg u64 x) -> reg u64 {
+  reg u64 y;
+  y = x;
+  return y;
+}

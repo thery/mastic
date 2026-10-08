@@ -1,0 +1,102 @@
+export
+fn orr(reg u32 arg0, reg u32 arg1) -> reg u32 {
+    reg u32 x;
+    reg bool nf, zf, vf, cf;
+
+    // Registers.
+    x = #ORR(arg0, arg1);
+    [x] = x;
+
+    // Immediates.
+    x = #ORR(arg0, 1);
+    [x] = x;
+    x = #ORR(arg0, -1);
+    x = #ORR(x, 0xcacacaca); // `bbbb` pattern.
+    x = #ORR(x, 0xca00ca00); // `b0b0` pattern.
+    x = #ORR(x, 0x00ca00ca); // `0b0b` pattern.
+    [x] = x;
+
+    // Shifts.
+    x = #ORR(arg0, arg1 << 0);
+    [x] = x;
+    x = #ORR(arg0, arg1 << 1);
+    [x] = x;
+    x = #ORR(arg0, arg1 << 31);
+    [x] = x;
+    x = #ORR(arg0, arg1 >> 1);
+    [x] = x;
+    x = #ORR(arg0, arg1 >> 31);
+    [x] = x;
+    x = #ORR(arg0, arg1 >>s 1);
+    [x] = x;
+    x = #ORR(arg0, arg1 >>s 31);
+    [x] = x;
+    x = #ORR(arg0, arg1 >>r 1);
+    [x] = x;
+    x = #ORR(arg0, arg1 >>r 31);
+    [x] = x;
+
+    // Set flags.
+    nf, zf, cf, x = #ORRS(x, arg0);
+
+    // Conditionals.
+    nf, zf, cf, vf = #CMP(x, 0);
+
+    // EQ
+    x = #ORRcc(arg0, arg1, zf, x);
+    // NE
+    x = #ORRcc(arg0, arg1, !zf, x);
+    // CS
+    x = #ORRcc(arg0, arg1, cf, x);
+    // CC
+    x = #ORRcc(arg0, arg1, !cf, x);
+    // MI
+    x = #ORRcc(arg0, arg1, nf, x);
+    // PL
+    x = #ORRcc(arg0, arg1, !nf, x);
+    // VS
+    x = #ORRcc(arg0, arg1, vf, x);
+    // VC
+    x = #ORRcc(arg0, arg1, !vf, x);
+    // HI
+    x = #ORRcc(arg0, arg1, cf && !zf, x);
+    // LS
+    x = #ORRcc(arg0, arg1, !cf || zf, x);
+    // GE
+    x = #ORRcc(arg0, arg1, nf == vf, x);
+    // LT
+    x = #ORRcc(arg0, arg1, nf != vf, x);
+    // GT
+    x = #ORRcc(arg0, arg1, !zf && nf == vf, x);
+    // LE
+    x = #ORRcc(arg0, arg1, zf || nf != vf, x);
+
+    // Combinations.
+    nf, zf, cf, x = #ORRScc(x, arg0, nf == vf, nf, zf, cf, x);
+    nf, zf, cf, x = #ORRS(x, 2);
+    ?{}, x = #ORRS(x, 0xcacacaca);
+    ?{}, x = #ORRS(x, 0xca00ca00);
+    ?{}, x = #ORRS(x, 0x00ca00ca);
+    nf, zf, cf, x = #ORRS(x, arg0 << 3);
+    nf, zf, cf, x = #ORRS(x, arg0 >> 3);
+    nf, zf, cf, x = #ORRS(x, arg0 >>s 3);
+    nf, zf, cf, x = #ORRS(x, arg0 >>r 3);
+    nf, zf, cf, x = #ORRScc(x, 2, nf == vf, nf, zf, cf, x);
+    nf, zf, cf, x = #ORRScc(x, arg0 << 3, nf == vf, nf, zf, cf, x);
+    nf, zf, cf, x = #ORRScc(x, arg0 << 3, !!(nf == vf), nf, zf, cf, x);
+    nf, zf, cf, x = #ORRScc(x, arg0 >> 3, nf == vf, nf, zf, cf, x);
+    nf, zf, cf, x = #ORRScc(x, arg0 >>s 3, nf == vf, nf, zf, cf, x);
+    nf, zf, cf, x = #ORRScc(x, arg0 >>r 3, nf == vf, nf, zf, cf, x);
+    x = #ORRcc(x, arg0, !!!!zf, x);
+    x = #ORRcc(x, 2, zf, x);
+    x = #ORRcc(x, 2, !!zf, x);
+    x = #ORRcc(x, arg0 << 3, zf, x);
+    x = #ORRcc(x, arg0 << 3, !!zf, x);
+    x = #ORRcc(x, arg0 >> 3, zf, x);
+    x = #ORRcc(x, arg0 >>s 3, zf, x);
+    x = #ORRcc(x, arg0 >>r 3, zf, x);
+
+    reg u32 res;
+    res = x;
+    return res;
+}

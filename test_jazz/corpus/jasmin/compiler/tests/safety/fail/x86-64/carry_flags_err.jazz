@@ -1,0 +1,13 @@
+export
+fn test() -> reg u64 {
+  reg bool cf;
+  reg u64 i;
+
+  i = 2;
+  cf, i -= 1;
+  if (!cf){
+    #[ensure_termination]while (true) { i += 1;}
+  }
+
+  return i;
+}

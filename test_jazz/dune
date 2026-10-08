@@ -1,0 +1,7 @@
+(executable
+ (name main)
+ (modules main)
+ (libraries jazz_parser mastic))
+
+(cram
+ (deps ./main.exe (glob_files cases/*.jazz) (glob_files cases/*.ref)))

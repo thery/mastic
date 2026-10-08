@@ -1,0 +1,8 @@
+export fn foo (reg ptr u64[4] p) -> reg u64 {
+  reg u64 r;
+  reg ptr u64[4] s;
+  s = p;
+  s[0] = 1;
+  r = s[0];
+  return r;
+}

@@ -1,0 +1,8 @@
+fn f(reg u64 x) -> reg u64 {
+  reg u64 y;
+  inline int i;
+  for i = 0 to 4 {
+    y += x;
+  }
+  return y;
+}

@@ -1,0 +1,7 @@
+fn f(reg u64 x) -> reg u64 {
+  reg u64 y;
+  y = x + 1;
+  y = y * 2;
+  y = y - 3;
+  return y;
+}

@@ -1,0 +1,10 @@
+/* ladder2_test.jazz -- the two-candidate witness test of ladder2.jazz as an
+   export, for ladder2_pass_test.c (against the C of proth_mont.h) */
+require "ladder2.jazz"
+export fn proth_pass2_test(reg u64 hA hB n aA aB) -> reg u64 {
+  reg u64 rA rB;
+  rA, rB = proth_pass2(hA, hB, n, aA, aB);
+  rB = rB << 1;
+  rA |= rB;
+  return rA;
+}

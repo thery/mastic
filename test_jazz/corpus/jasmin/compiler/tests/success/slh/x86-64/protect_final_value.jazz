@@ -1,0 +1,24 @@
+#[sct = "transient → public"]
+export
+fn protect_final_value(reg u64 p) -> reg u64 {
+    reg u64 msf, temp;
+    reg u64 sum;
+    reg u64 i;
+    reg bool b;
+
+    msf = #init_msf();
+    sum = 0;
+    i = 0;
+
+    while{b = i < 10;}(b){
+        msf = #update_msf(b, msf);
+        temp = [p + i];
+        #declassify(temp);
+        sum += temp;
+        i += 1;
+    }
+    msf = #update_msf(!b, msf);
+    sum = #protect(sum, msf);
+
+    return sum;
+}

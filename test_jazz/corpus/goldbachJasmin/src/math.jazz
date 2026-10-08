@@ -1,0 +1,119 @@
+fn isqrt (reg u64 n) -> reg u64 { 
+  reg u64 x, y;
+  x = n; 
+  if (n >=u 2) {
+    // y = (x + 1) / 2;
+    y = x; y += 1; y = y >> 1;
+    while (y < x) { 
+      x = y;  
+      // y = (x + (n / x)) / 2 
+      y = n; y = y / x; y += x; y >>= 1;
+    }
+  } 
+  return x;
+}
+
+
+/* ************************************************** */
+
+/* compute the number of leading zero */ 
+inline fn floor_log2_64 (inline u64 i) -> inline int 
+{
+  inline int ldz = 0;
+  inline int j;
+  for j = 0 to 64 {
+    if (1 << j <= i) { ldz = j; }
+  }    
+  return ldz;
+}
+
+
+/* Taken from https://github.com/ridiculousfish/libdivide/blob/master/libdivide.h */
+// Pre d > 0 
+inline fn udiv_64_imm (reg u64 x, inline int d) -> reg u64 
+{
+  reg u64 q;
+  inline int shift = floor_log2_64(d);
+  if (d & (d - 1) == 0) { // d is a power of 2       
+    q = x; q >>= shift; 
+  } else {
+    inline int num = 1 << (64 + shift);
+    inline u64 proposed_m = (64u)(num / d);
+    inline u64 rem = (64u)(num % d); 
+    inline u64 e = d - rem;
+    if (e <u (1 << shift)) { 
+      reg u64 m = proposed_m + 1;      
+      reg u64 hi;
+      _, _, _, _, _, hi, _ = #MUL(m, x);
+      q = hi; q >>= shift;
+    } else {
+      /* libdivide guards this with `if (twice_rem >= d || twice_rem < rem)
+         proposed_m += 1', because its branchfree variant reaches this code for
+         every d.  Here the branch above already forces 2 * rem < d, so that
+         test can only ever be false: shift is the FLOOR of log2 d, so
+         d < 2^(shift+1), i.e. 2^shift > d/2; getting here means e >= 2^shift,
+         hence e > d/2 and rem = d - e < d/2.  Same reason why rem + rem
+         cannot wrap.  See ec/math.ec, lemma magic_double. */
+      proposed_m += proposed_m;
+      proposed_m += 1;
+      reg u64 hi;
+      reg u64 m = proposed_m;
+      _, _, _, _, _, hi, _ = #MUL(m, x);
+      q = x; q -= hi; q >>= 1; q += hi;
+      q >>= shift;
+    }
+  }   
+  return q;
+}
+
+inline fn udiveucl_64_imm (reg u64 x, inline int d) -> reg u64, reg u64 {
+   reg u64 q, qd, r;
+   q = udiv_64_imm(x, d);
+   qd = q * d; r = x; r -= qd;
+   return q, r;
+}
+
+inline fn umod_64_imm(reg u64 x, inline int d) -> reg u64 {
+   reg u64 q, r;
+   q, r = udiveucl_64_imm(x, d);
+   return r;
+}
+
+
+
+inline fn div(reg u64 a, reg u64 b) -> reg u64 { 
+  reg u64 q;     
+  q = a; b = b;  
+  q = q /64u b; 
+  q = q;
+  return q;
+}
+
+inline fn max(reg u64 a, reg u64 b) -> reg u64 {
+  reg u64 r;
+  r = a; 
+  r = b if (b > a);
+  return r;     
+}
+
+inline fn max_imm(reg u64 a, inline int i ) -> reg u64 {
+  reg u64 b, r;
+  b = i; 
+  r = max(a, b);
+  return r;     
+}
+
+inline fn min(reg u64 a, reg u64 b) -> reg u64 {
+  reg u64 r;
+  r = a; 
+  r = b if (b < a);
+  return r;     
+}
+
+inline fn min_imm(reg u64 a, inline int i ) -> reg u64 {
+  reg u64 b, r;
+  b = i; 
+  r = min(a, b);
+  return r;     
+}
+

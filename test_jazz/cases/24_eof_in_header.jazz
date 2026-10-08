@@ -1,0 +1,3 @@
+param int N = 4;
+
+fn f(reg u64 x, reg u64

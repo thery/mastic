@@ -1,0 +1,28 @@
+export fn test_while(reg u64 x) -> reg u64 {
+  reg bool zf;
+  reg u64 i, r;
+
+  i = 10;
+  r = 0;
+  #[align] while {
+   r += 1;
+   ?{ZF=zf}, i = #DEC(i);
+  } (!zf) { 
+   r += 2; 
+  }
+
+  r = r + x;
+  return r;
+}
+
+export fn zero(reg u64 y) -> reg u64 {
+  reg bool b;
+  reg u64 x;
+  x = y;
+  while {
+    b = x <s 0;
+  } (b) {
+    x += 1;
+  }
+  return x;
+}

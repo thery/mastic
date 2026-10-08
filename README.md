@@ -216,6 +216,15 @@ ast: (Ast.Prog.P
 
 Still note that the AST contains all the tokens.
 
+## Real grammars
+
+Two directories apply Mastic to the parser of a real language, step by step,
+and measure the quality of the recovery on thousands of damaged programs
+(precision, recall and F1 of the nodes of the recovered syntax tree):
+
+- [`test_elpi`](test_elpi/README.md): the parser of Elpi;
+- [`test_jazz`](test_jazz/README.md): the parser of Jasmin.
+
 ## What is the status of this software?
 
 EXPERIMENTAL

@@ -1,0 +1,488 @@
+require "sieving_prime.jazz"
+
+
+/*
+The pool is the CALLER's: a block of M buckets, M an argument of the exports
+(eratCount's sixth, goldbach's stats[2]), stored in cfg[Cfg::POOLBUCKETS] and
+handed by eratInit to MemoryPool::init as size = M - 2.  eratInit checks it
+(ec/PLAN-lazy-pool.md, DC1-DC3, the constants below): a pool too small for
+the run is refused, and the exports return 2^64 - 1 without sieving.
+allocBucket itself checks nothing: it is the check at init that guarantees
+it never finds the pool exhausted.
+
+The pool is LAZY (ec/PLAN-lazy-pool.md, DL1-DL3).  init rounds the pointer up
+to a bucket boundary (the first bucket of the block is lost to alignment) and
+lays out a region of size + 1 buckets [pool, S]:
+  - S = pool + size * bucketBytes, the last one, is the STATUS bucket, never
+    handed out; its word 0 holds FRONT, the address of the first bucket never
+    touched: the fresh interval is [front, S);
+  - the capacity for the chains and the queue is n = size = M - 2 buckets,
+    [pool, S), and init touches only two of them: it hands out the first one
+    as the free list (next = Null) and sets front to the second.
+allocBucket pops the free list as before; when that leaves the list empty it
+CARVES the next fresh bucket, front, and moves front up by one bucket.  The
+free list is what crossOff, the re-bucketing and the queue give back, and
+allocBucket prefers it: a bucket is carved only when none is free.
+
+Every FREE bucket's word 1 (offset 8, the first data slot, unused while the
+bucket is free) holds the address of S, so whoever holds the free list's head
+reaches S in one load and the pool stays ONE register.  freeBucket copies it
+from the list's head into the bucket it pushes; when the list is empty it
+writes Null instead -- the list only empties when allocBucket pops its last
+bucket and has nothing left to carve, so S is never needed again.  The
+invariant: a free bucket's word 1 is S, or it is Null and the fresh interval
+is empty.
+
+Why: the pool of the largest root costs nothing until it is used.  Pages are
+engaged at the first write, and the former init chained every bucket, one
+store each: eratcount -s 0 1 took 0.169 s and 405 MB of RSS with the former
+default (98642 buckets) and 0.334 s and 838 MB with the full pool (204252),
+against 0.023 s and 1.5 MB with -m 93 (measured 2026-09-27, 4 KiB pages).
+With the lazy pool the same run takes 0.018 s and 1.5 MB whatever M (93,
+204253), and the peak RSS of a run is what it carves: 800 MB at 4e18, 1.63 GB
+at the last segments below 2^64 (ec/PLAN-lazy-pool.md, section 6).
+
+What a run needs (ec/goldbach/payload.ec, fits; ec/goldbach/erat_init.ec,
+pool_fits): with C a bound on the count of the primes up to
+qtop = 30 * (ROOT / 30) + 29 and D = 8355 = poolSlack (the bootstrap's
+copies and its first pass),
+   fits n (C + D) (72 + bigMemSize),  fits n w c := w + 1022 c + 3067 < 1023 n,
+n = M - 2.  That is what the harnesses' -m auto takes, C from Dusart's bound
+on pi (src_c, poolAuto).
+
+The pool holds one queue of primes and at most 72 + bigMemSize
+sieving-prime chains (EratMedium's lists and EratBig's window).  Every bucket
+of a chain but its head is full -- ensureSpace only links a fresh bucket when
+the current one is (ec/goldbach/memory_pool.ec, chain_filled) -- so a chain
+of w words takes at most (w + 1022) / 1023 buckets, and the queue, consumed
+from its head and filled at its tail, at most (w + 2044) / 1023.
+EratBig::crossOff holds one bucket more outside the pool's state while it
+drains it (mem[0] = getNext(bucket) at the top of its body, freeBucket only
+at the bottom): 3067 = 2 * 1022 (the queue's waste) + 1023 (that bucket),
+fits' 3 * poolCap - 2.
+
+MemoryPoolBuckets below is the DEFAULT the harnesses use (getParams'
+params[3]): the pool of the LARGEST root at k = 18, R = 2^32 - 1 (the root
+of any run whose end is at or beyond 2^64), qtop = 4294967309, C = pi(qtop) = pi(2^32) = 203280221 (a count
+eratCount itself gives in 0.4 s), bigMemSize = 5463:
+   w = 203280221 + 8355 + 1022 * (72 + 5463) + 3067 = 208948413,
+   n = w / 1023 + 1 = 204251 (1023 * 204250 = 208947750 <= w),
+   M = n + 2 = 204253  (1.67 GB of address space).
+So every run of every hi < 2^64 fits in the default (at k = 23 the window
+is smaller, bigMemSize = 172, and M = 198967 suffices), and since the pool is
+lazy the default costs a run only what it uses.
+*/
+
+param int MemoryPoolBuckets = 204253;  
+
+/* The budget eratInit checks (ec/PLAN-lazy-pool.md, DC1-DC3 and section
+   12), in words of the pool (poolCap = bucketSize - 1 = 1023 words a
+   bucket), named here so that the proof can equate them with its own:
+     PoolSlack   erat_init.ec's poolSlack: the bootstrap's NOCLEAR copies
+                 (5871) and its first pass's words (2484);
+     ChainWaste  poolCap - 1, what a chain can waste in its head bucket;
+     FitsSlack   3 * poolCap - 2: the queue's waste (2 * 1022) and the bucket
+                 crossOff holds outside the pool while it drains it (1023);
+     NumChains   the medium chains (EratMedium's lists); the big ones are
+                 cfg[BIGMEMSIZE].
+   With n = M - 2 and K = PoolSlack + ChainWaste * (NumChains + bigMemSize)
+   + FitsSlack, a run requires, w being the number of primes the bootstrap's
+   scan stores in the queue,
+     w + K < 1023 n,
+   payload.ec's `fits n (w + poolSlack) (72 + bigMemSize)'.  eratInit hands
+   the scan the budget 1023 n - K (Sieve::accumulatePrimes), which refuses
+   the prime that would break it, and evaluates the inequality at the end;
+   a refused run returns 2^64 - 1 from the exports. */
+param int PoolSlack   = 8355;
+param int ChainWaste  = 1022;
+param int FitsSlack   = 3067;
+param int NumChains   = 72;
+
+param int Null = 0;
+/* ---------------------------------------------------------- */
+/* Buckets                                                    */
+
+namespace Bucket { 
+  /* struct
+       Bucket* next_;             /* 8 bytes, a pointer to the last element of the next bucket */
+       SievingPrime sievingPrimes_[SIEVING_PRIMES_SIZE];
+  */
+
+  param int bucketSize = 1024;
+  param int bucketBytes = 8 * bucketSize; /* 2^13 = 8192 */
+
+  type sievingPrimePtr = u64;
+  type bucketPtr = u64;  // a multiple of bucketBytes 
+
+  inline fn bucket(reg sievingPrimePtr spp) -> reg bucketPtr 
+  {
+    reg bucketPtr bp;
+    bp = spp; bp &= !(bucketBytes - 1);
+    return bp;
+  }
+
+  inline fn getNext(reg bucketPtr bp) -> reg sievingPrimePtr 
+  {
+    reg bucketPtr next;
+    next = [:u64 bp];
+    return next;
+  }
+
+  /* Pre : bp points to the begin of a bucket, i.e. bp % bucketBytes = 0 */
+  inline fn setNext(reg bucketPtr bp, reg sievingPrimePtr next) 
+  {
+    [:u64 bp] = next;
+  }
+
+  inline fn getStart(reg bucketPtr bp) -> reg sievingPrimePtr 
+  {
+    reg sievingPrimePtr start;
+    start = bp; start += 8;
+    return start;
+  }
+
+  /* The bucket an `end` belongs to. `end` is the next FREE slot, so once a
+     bucket is exhausted it sits one past its last slot, on the boundary of the
+     NEXT bucket: the mask has to be applied to the last written slot instead.
+     Pre : end != Null. */
+  inline fn bucketOf(reg sievingPrimePtr end) -> reg bucketPtr 
+  {
+    reg bucketPtr bp;
+    bp = end; bp -= 8; bp &= !(bucketBytes - 1);
+    return bp;
+  }
+ 
+  /* `end` is the next FREE slot, so it sits on a bucket boundary exactly when
+     there is nowhere left to write - and Null is on a boundary too. A slot
+     that has never been used therefore takes the very same path as a full
+     bucket, and no Null test is needed anywhere else.
+
+     Testing `end` rather than `end + 8` is what makes that work: the increment
+     moves after the store, where it can be done in place, so the copy that
+     kept `end` alive for set_next disappears. TEST rather than a copy plus
+     AND: the result is only needed as a flag. */
+  inline fn isFull(reg sievingPrimePtr end) -> reg bool 
+  {
+    reg bool zf;
+    ?{zf} = #TEST_64(end, bucketBytes - 1);
+    return zf;
+  } 
+
+ 
+
+}
+
+namespace MemoryPool { 
+
+  /* The pushed bucket learns S from the list's head (word 1, see the header),
+     or Null when the list is empty: then the fresh interval is exhausted and
+     S is never read again.  A real `if' and not a cmov: the load must not
+     happen when pool is Null.  Once per 1023 words, and pool is Null only
+     when the pool has run dry, so the branch is always predicted. */
+  inline fn freeBucket (reg Bucket::bucketPtr pool, reg Bucket::bucketPtr bp) -> reg Bucket::bucketPtr 
+  {
+    reg Bucket::bucketPtr status;
+    status = Null;
+    if (pool != Null) { status = [:u64 pool + 8]; }
+    [:u64 bp + 8] = status;
+    Bucket::setNext(bp, pool);
+    pool = bp; // The new pool
+    return pool; 
+  }
+
+  /* `next` is what the new bucket's next field gets. Every caller has that
+     value to hand - the end of the chain it is extending, or Null to close a
+     fresh one - so writing it here saves the store to Null that the caller
+     used to overwrite immediately afterwards.
+     The read of pool's next field stays BEFORE the write to the same address:
+     bucket and pool are the same bucket at that point.
+
+     When the pop empties the list, carve: the popped bucket's word 1 is S (or
+     Null, the fresh interval being exhausted), S's word 0 is front, and front
+     < S means a fresh bucket is left; it becomes the list, one bucket long,
+     with its own word 1 = S.  Nothing left: pool is Null, and the NEXT
+     allocBucket dies on it -- the budget (the header) says it never
+     happens.  The carving is unlikely: once per 1023 stores at most, and
+     only while no bucket is free.
+     Register pressure: this is inlined into Primes::storePrime inside
+     Sieve::accumulatePrimes, which has none to spare.  Hence setNext BEFORE
+     the carving (it writes word 0 of the popped bucket, the carving reads
+     its word 1: independent), so that `next' is dead in the branch, and
+     front lives in `pool' rather than in a register of its own; with either
+     one missing, jasminc runs out of registers. */
+  inline fn allocBucket (reg Bucket::bucketPtr pool, reg Bucket::sievingPrimePtr next) -> reg Bucket::bucketPtr, reg Bucket::bucketPtr 
+  { 
+    reg Bucket::bucketPtr bucket;
+    bucket = pool;
+    pool = Bucket::getNext(bucket);
+    Bucket::setNext(bucket, next);
+    #[unlikely]
+    if (pool == Null) {
+      reg Bucket::bucketPtr status;
+      status = [:u64 bucket + 8];
+      if (status != Null) {
+        pool = [:u64 status];       // front
+        if (pool < status) {
+          pool += Bucket::bucketBytes;
+          [:u64 status] = pool;     // front + bucketBytes
+          pool -= Bucket::bucketBytes;
+          [:u64 pool] = Null;
+          [:u64 pool + 8] = status;
+        } else {
+          pool = Null;
+        }
+      }
+    }
+    return pool, bucket;  // new pool, allocated bucket 
+  }
+
+  /* The region is [pool, S], size + 1 buckets after the alignment: the list
+     is the first bucket alone, the fresh interval [pool + bucketBytes, S).
+     No loop: the buckets are touched when they are carved. */
+  inline fn init(reg Bucket::bucketPtr pool, reg u64 size) -> reg Bucket::bucketPtr 
+  {
+    // Ensure the alignment: the first bucket boundary above the caller's pointer
+    pool &= !(Bucket::bucketBytes - 1); // pool = (pool / bucketBytes) * bucketBytes
+    pool += Bucket::bucketBytes;
+    //
+    reg Bucket::bucketPtr status, front;
+    status = size; status *= Bucket::bucketBytes; status += pool; // S = pool + size * bucketBytes
+    Bucket::setNext(pool, Null);
+    [:u64 pool + 8] = status;
+    front = pool; front += Bucket::bucketBytes;
+    [:u64 status] = front;
+    return pool;
+  }
+/*
+  export fn init_export (reg Bucket::bucketPtr pool, reg u64 size) -> reg Bucket::bucketPtr 
+  {
+    pool = init(pool, size);
+    return pool;
+  }
+*/
+
+  inline fn ensureSpace(reg Bucket::bucketPtr pool, 
+                        reg Bucket::sievingPrimePtr end) ->
+         reg Bucket::bucketPtr,      // pool
+         reg Bucket::sievingPrimePtr // end 
+  {
+    reg bool isfull;   
+    isfull = Bucket::isFull(end);
+    /* Once per bucketSize stores. Out of line, so the loop this is inlined in
+       - EratBig::crossOff, and EratMedium's re-bucketing - keeps the common
+       path as a fall-through and does not carry the allocation in its body. */
+    #[unlikely]
+    if (isfull) {
+      /* Covers both cases: the bucket is exhausted, or `end` is Null because
+         nothing was ever stored here. In the second case the chain is closed
+         with Null, which is exactly what the readers expect. */
+      reg Bucket::bucketPtr new_bucket;
+      pool, new_bucket = allocBucket(pool, end);
+      end = new_bucket; end += 8;
+    }
+    return pool, end;
+  }
+ 
+  inline fn storeSievingPrime(reg Bucket::bucketPtr pool, 
+                           reg Bucket::sievingPrimePtr end, 
+                           reg SievingPrime::t sievingPrime) ->
+         reg Bucket::bucketPtr,      // pool
+         reg Bucket::sievingPrimePtr // end 
+  {
+    pool, end = ensureSpace(pool, end);    
+    [:u64 end] = sievingPrime;
+    end += 8;
+    return pool, end;
+  }
+
+}
+
+namespace Primes { 
+
+  /* Primes list
+     {  struct
+       Bucket   next;             /* 8 bytes, a pointer to the next bucket */
+       Prime[]  primes;           /* the stored Prime, u64, from offset 8 */
+     }
+     A Prime is (p / 30) << 3 | r, and it is stored on 64 bits like a
+     SievingPrime: a bucket holds bucketSize - 1 of them, exactly as one of
+     MemoryPool's, and the cursor is eight-aligned.  Nothing is lost in space
+     by that -- a prime is in the list or in mediumMem/bigMem, never in both,
+     and it takes 8 bytes there -- so the peak the pool is sized for, all of
+     them stored as SievingPrimes, is unchanged.
+     The chain is built FORWARD -- storePrime links the bucket it has just
+     filled to the one it allocates -- and read forward from `primes'.  There is
+     no per bucket `end': every bucket but the last one is full, so the end of a
+     bucket is its upper boundary unless it is the bucket `end' points into.
+     That is `endOf', and it is why the consumers are given `end'. */
+
+        
+
+  type primePtr = u64;
+
+  /* The end of the bucket `p' is in: the global `end' when that is the same
+     bucket, its upper boundary otherwise.  bucketOf and not bucket for `end':
+     it sits on the boundary of the bucket it fills exactly when that one is
+     full, and both branches then give the same address.
+
+     A conditional assignment and not an `if', which in Jasmin is a real jump:
+     the test is false for every bucket of the chain and true for the last one,
+     which is the shape a predictor gets wrong once per traversal. */
+  inline fn endOf(reg primePtr end, reg primePtr p) -> reg primePtr
+  {
+    reg Bucket::bucketPtr b, be;
+    reg primePtr e;
+    b = Bucket::bucket(p);
+    be = Bucket::bucketOf(end);
+    e = b; e += Bucket::bucketBytes;
+    e = end if (be == b);
+    return e;
+  } 
+
+  inline fn getStart(reg Bucket::bucketPtr pool, reg Bucket::bucketPtr bucket, reg primePtr end) -> reg Bucket::bucketPtr, reg primePtr 
+  {
+    reg primePtr start;
+    start = Bucket::getStart(bucket);
+    /* `end' is the next free slot, so the list is empty exactly when it still
+       is the first one.  EQUALITY and not <=: `end' is now the end of the whole
+       list, which may be in another bucket, and the pool hands buckets out in
+       no particular address order (the free list is LIFO, the carving goes
+       up) -- so a non-empty list can perfectly well have its end below this
+       bucket's start. */
+    if (end == start) { 
+      pool = MemoryPool::freeBucket(pool, bucket);
+      start = Null; 
+    }
+    return pool, start;
+  } 
+
+    
+  inline fn alloc(reg Bucket::bucketPtr pool) -> reg Bucket::bucketPtr, reg Bucket::bucketPtr 
+  {
+    reg Bucket::bucketPtr bucket; 
+    /* Null: this bucket ends the chain, Primes::storePrime linking the
+       previous one forward to it. */
+    reg Bucket::sievingPrimePtr none = Null;
+    pool, bucket = MemoryPool::allocBucket(pool, none);
+    return pool, bucket;
+  }
+
+  inline fn free(reg Bucket::bucketPtr pool, reg primePtr primes) -> reg Bucket::bucketPtr 
+  { 
+    while(primes != Null) {
+      reg Bucket::bucketPtr bucket;
+      bucket = Bucket::bucket(primes);
+      primes = Bucket::getNext(bucket);
+      pool = MemoryPool::freeBucket(pool, bucket);
+    }
+    return pool;
+  }        
+/*
+  export fn alloc_export(reg ptr u64[2] out, reg Bucket::bucketPtr pool) -> reg ptr u64[2] 
+  {
+     reg Bucket::bucketPtr bucket; 
+     pool, bucket = alloc(pool);
+     out[0] = pool;
+     out[1] = bucket;
+     return out;
+  }
+*/
+
+  param bool CLEAR = true;  
+  param bool NOCLEAR = false;  
+  /* `end' is the end of the whole list and never moves; `end_cur' is the end
+     of the bucket being read, so the test in the loop stays a single one.  When
+     it fires, the two cases are told apart by `end': either the list is over,
+     or this bucket is and the next one follows. */
+  inline fn nextPrime(reg Bucket::bucketPtr pool, reg primePtr primes, reg primePtr end, reg primePtr end_cur, inline bool clear) ->
+      reg Bucket::bucketPtr, reg primePtr, reg primePtr
+  {
+    primes += 8;
+    /* bucketOf, not bucket: `primes' is on the NEXT bucket's boundary when
+       this one filled up, and inside this one when it did not -- bucketOf is
+       right for both. */
+    if (primes == end_cur) {
+      reg Bucket::bucketPtr bucket, next_bucket;
+      bucket = Bucket::bucketOf(primes);
+      if (primes == end) {
+        primes = Null;
+      } else {
+        next_bucket = Bucket::getNext(bucket);
+        primes = next_bucket; primes += 8;
+        end_cur = endOf(end, primes);
+      }
+      if (clear) { pool = MemoryPool::freeBucket(pool, bucket); }
+    }     
+    return pool, primes, end_cur;
+  }   
+
+  inline fn ensureSpace(reg Bucket::bucketPtr pool, 
+                        reg primePtr end) -> reg Bucket::bucketPtr, reg primePtr
+  {
+    reg bool isfull;    
+    /* `end' is the next FREE slot here too, so it is on a bucket boundary
+       exactly when there is nowhere left to write: Bucket's test, unchanged. */
+    isfull = Bucket::isFull(end);
+    if (isfull) {
+      reg Bucket::bucketPtr new_bucket, bucket;
+      pool, new_bucket = alloc(pool);
+      /* bucketOf, not bucket: `end' is on the next bucket's boundary here. */
+      bucket = Bucket::bucketOf(end);
+      Bucket::setNext(bucket, new_bucket);
+      end = new_bucket; end += 8;
+    } 
+    return pool, end;
+  }
+
+  inline fn storePrime (reg Bucket::bucketPtr pool, 
+                        reg primePtr end, 
+                        reg u64 sievePrime, reg u64 r) -> reg Bucket::bucketPtr, reg primePtr
+  {
+    /* (p / 30) << 3 | r, the wheel index and the residue in one word */
+    reg u64 prime = sievePrime;
+    prime <<= 3;
+    prime |= r;
+    pool, end = ensureSpace(pool, end);
+    [:u64 end] = prime; 
+    end += 8;
+    return pool, end;
+  }
+/*
+  export fn storePrime_export(reg ptr u64[2] out, reg Bucket::bucketPtr pool, 
+                        reg primePtr end, 
+                        reg u64 sievePrime, reg u64 r) -> reg ptr u64[2]
+  {
+    reg Bucket::sievingPrimePtr new_end;
+    pool, new_end = storePrime(pool, end, sievePrime, r);
+    out[0] = pool;
+    out[1] = new_end;
+    return out;
+  }
+*/
+  inline fn sievePrime(reg primePtr p) -> reg u64
+  { 
+    reg u64 sievePrime;
+    sievePrime = [:u64 p];
+    sievePrime >>= 3;
+    return sievePrime;
+  }
+
+  inline fn residue (reg primePtr p) -> reg u64
+  { 
+    reg u64 r;
+    r = [:u64 p];
+    r &= 7;
+    return r;
+  }
+
+  inline fn decompose(reg primePtr p) -> reg u64, reg u64 
+  { 
+    reg u64 prime, sievePrime, r;
+    prime = [:u64 p];
+    sievePrime = prime; sievePrime >>= 3;
+    r = prime; r &= 7;
+    return sievePrime, r;
+  }  
+
+}
+

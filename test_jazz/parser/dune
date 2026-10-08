@@ -1,0 +1,12 @@
+; a copy of the parser of Jasmin (compiler/src of jasmin-lang/jasmin), with
+; error nodes, error rules and a recovery strategy for Mastic
+(library
+ (name jazz_parser)
+ (flags (:standard -w -9))
+ (libraries zarith menhirLib mastic))
+
+(ocamllex (modules lexer))
+
+(menhir
+ (flags --table --explain --inspection --canonical)
+ (modules parser))

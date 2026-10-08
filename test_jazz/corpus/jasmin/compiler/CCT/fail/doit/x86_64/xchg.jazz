@@ -1,0 +1,8 @@
+// This is CT in the ordinary sense, but not DOIT as XCHG is not DOIT.
+#[ct="secret * secret -> secret * secret"]
+export fn xchange(reg u32 a, reg u32 b) -> reg u32, reg u32 {
+    a = a;
+    b = b;
+    a, b = #swap(a, b);
+    return a, b;
+}

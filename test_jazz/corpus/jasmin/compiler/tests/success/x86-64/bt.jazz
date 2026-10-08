@@ -1,0 +1,61 @@
+export
+fn test_bt(reg u64 x y) -> reg u64 {
+  reg u64 r;
+  reg bool c;
+  r = x;
+  ?{ CF = c } = #BT_16(x, y);
+  r = y if c;
+  ?{ CF = c } = #BT_32(x, y);
+  r = y if c;
+  ?{ CF = c } = #BT_64(x, y);
+  r = y if c;
+  ?{ CF = c } = #BT_16(x, 5);
+  r = y if c;
+  ?{ CF = c } = #BT_32(x, 15);
+  r = y if c;
+  ?{ CF = c } = #BT_64(x, 15);
+  r = y if c;
+  return r;
+}
+
+export
+fn test_btr(reg u64 x y) -> reg u16 {
+  x = x;
+  reg bool c;
+  reg u16 w;
+  reg u32 d;
+  ?{ CF = c }, x = #BTR(x, y);
+  _, y += 0 + c;
+  ?{ CF = c }, x = #BTR(x, 1);
+  _, y += 0 + c;
+  ?{ CF = c }, d = #BTR_32(x, y);
+  _, y += 0 + c;
+  ?{ CF = c }, d = #BTR_32(d, 17);
+  _, y += 0 + c;
+  ?{ CF = c }, w = #BTR_16(d, y);
+  _, w +16u= 0 + c;
+  ?{ CF = c }, w = #BTR_16(w, 7);
+  _, w +16u= 0 + c;
+  return w;
+}
+
+export
+fn test_bts(reg u64 x y) -> reg u16 {
+  x = x;
+  reg bool c;
+  reg u16 w;
+  reg u32 d;
+  ?{ CF = c }, x = #BTS(x, y);
+  _, y += 0 + c;
+  ?{ CF = c }, x = #BTS(x, 1);
+  _, y += 0 + c;
+  ?{ CF = c }, d = #BTS_32(x, y);
+  _, y += 0 + c;
+  ?{ CF = c }, d = #BTS_32(d, 17);
+  _, y += 0 + c;
+  ?{ CF = c }, w = #BTS_16(d, y);
+  _, w +16u= 0 + c;
+  ?{ CF = c }, w = #BTS_16(w, 7);
+  _, w +16u= 0 + c;
+  return w;
+}

@@ -1,0 +1,6 @@
+fn f(reg u64 x) -> reg u64 {
+  reg u64 y;
+  y = g(x, y;
+  y += 1;
+  return y;
+}

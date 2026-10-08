@@ -1,0 +1,34 @@
+export
+fn test_vpblendvb(reg u64 rp) {
+  reg u256 f0 f1 m;
+  reg u128 h0 h1 n;
+
+  f0 = #set0_256();
+  f1 = #set0_256();
+  m = #set0_256();
+  f0 = #BLENDV_32u8(f0, f1, m);
+  [:u256 rp] = f0;
+
+  h0 = #set0_128();
+  h1 = #set0_128();
+  n = #set0_128();
+  h0 = #BLENDV_16u8(h0, h1, n);
+  [:u128 rp + 32] = h0;
+}
+
+export
+fn test_blendv(reg u64 p) {
+  reg u256
+    x = [:u256 p],
+    m = [:u256 p + 32],
+    y = #BLENDV_32u8(x, [:u256 p + 16], m);
+  x = #BLENDV_8u32(y, m, x);
+  y = #BLENDV_4u64(m, x, x);
+
+  reg u128
+    z = #BLENDV_16u8(x, y, m),
+    w = #BLENDV_4u32(y, m, z);
+  z = #BLENDV_2u64(m, z, w);
+
+  [:u128 p] = z;
+}

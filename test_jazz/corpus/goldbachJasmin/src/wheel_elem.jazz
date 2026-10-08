@@ -1,0 +1,62 @@
+param u8 bit0 = !(1 <<8u 0);
+param u8 bit1 = !(1 <<8u 1);
+param u8 bit2 = !(1 <<8u 2);
+param u8 bit3 = !(1 <<8u 3);
+param u8 bit4 = !(1 <<8u 4);
+param u8 bit5 = !(1 <<8u 5);
+param u8 bit6 = !(1 <<8u 6);
+param u8 bit7 = !(1 <<8u 7);
+
+namespace WheelElem {
+
+  /* Packed into 32 bits, 29 of them used:
+       bits  0..7   unsetBit, the byte mask ~(1 << b)
+       bits  8..11  nextMultipleFactor, at most 10
+       bits 16..28  correctNext = (correct << wheelIndexBits) | next,
+                    correct at most 10 and next at most 8*phi(WHEEL)-1 = 383
+
+     correct and next share one field on purpose. The sieving loop ends with
+
+         multipleIndex += correct;
+         sievingPrime   = (sievePrime << 32) | (multipleIndex << 9) | next
+
+     and 9 is exactly SievingPrime::wheelIndexBits, the width of the field next
+     lands in. So
+
+         (multipleIndex << 9) + correctNext
+
+     adds correct and inserts next in one go: next is below bit 9, it cannot
+     carry into the multipleIndex part, and correct sits at precisely the
+     weight multipleIndex has once shifted. Extracting two fields, adding one
+     and or-ing the other - seven instructions - becomes one shift and one add.
+     See EratBig::crossOff.
+
+     The rest of the order is chosen for the extraction, not for readability.
+     unsetBit is in the low byte because it goes straight to the sieve, on the
+     critical path from the table load; correctNext is at the top because
+     nothing sits above it, so a plain shift extracts it with no mask. Only
+     nextMultipleFactor is left needing a mask.
+
+     One u32 load, not one load per field: the fields are deliberately NOT byte
+     aligned. Byte aligning them (commit "pack wheel elements into 32 bits" +
+     the byte-load variant) saves three ALU ops but costs two extra loads, and
+     measured 1 to 2% SLOWER - this loop is bound by its memory accesses (a
+     random read-modify-write on the sieve, plus the bucket read and write),
+     not by the ALU.
+
+     This type is only the element type of the generated tables. decompose
+     takes a u64, because the caller widens at the load: `(64u)wheel[i]`
+     compiles to a plain 32-bit load, which zero-extends for free, whereas
+     widening a u32 already sitting in a register costs a separate move. */
+  type t = u32;
+
+  inline fn decompose (reg u64 elem) -> reg u8, reg u64, reg u64 {
+    /* u8, so that it reaches the sieve as the low byte of the loaded entry
+       with no extraction at all. */
+    reg u8 unsetBit = (8u) elem;
+    reg u64 nextMultipleFactor = elem; nextMultipleFactor >>u= 8; nextMultipleFactor &= (1<<4) - 1;
+    reg u64 correctNext = elem; correctNext >>u= 16;
+    return unsetBit, nextMultipleFactor, correctNext;
+  }
+
+}

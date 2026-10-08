@@ -1,0 +1,324 @@
+require "eratSmall.jazz"
+require "eratMedium.jazz"
+require "eratBig.jazz"
+
+inline fn eratMediumSegment(reg ptr EratSmall::SmallMem::t smallMem,
+                     reg ptr EratMedium::MediumMem::t mediumMem,
+                     reg ptr Sieve::t sieve, 
+                     reg Bucket::bucketPtr pool,
+                     reg Primes::primePtr primes,
+                     stack Primes::primePtr end_s,
+                     reg u64 segmentLow,
+                     reg ptr Cfg::t cfg,
+                     inline bool clear) ->
+              reg ptr EratSmall::SmallMem::t,
+              reg ptr EratMedium::MediumMem::t,
+              reg ptr Sieve::t, 
+              reg Bucket::bucketPtr,
+              reg Primes::primePtr,
+              reg u64
+{       
+  /* The memories are pointers (the caller's arrays, on its stack or the
+     client's): they wait on the stack across the calls that do not use them,
+     like pool and primes. */
+  #spill(pool, primes, smallMem, mediumMem);                                   
+  // Perform the sieve with very small primes 
+  reg u64 sieveBytes = cfg[Cfg::BYTES];
+  sieve = PreSieve::preSieve(sieve, segmentLow, sieveBytes);   
+  #spill(segmentLow);
+  // Perform the sieve with small primes
+  sieveBytes = cfg[Cfg::BYTES];
+  #unspill(smallMem);
+  sieve, smallMem = EratSmall::eratSmall(sieve, smallMem, sieveBytes);
+  #spill(sieve, smallMem);
+  // Perform the sieve with medium primes 
+      // First add the new primes needed for the segment
+  #unspill(pool, primes, segmentLow, mediumMem);
+  reg Primes::primePtr end = end_s;
+  pool, mediumMem, primes = EratMedium::addPrimes(pool, mediumMem, primes, end, segmentLow, cfg, clear);
+  #spill(primes);
+  // Then perform the sieve with medium primes 
+  #unspill(sieve);
+  sieveBytes = cfg[Cfg::BYTES];
+  pool, sieve, mediumMem = EratMedium::eratMedium(pool, sieve, mediumMem, sieveBytes);
+  #unspill(primes, segmentLow, smallMem);
+  return smallMem, mediumMem, sieve, pool, primes, segmentLow;
+}
+  
+/* The queue of the primes of segment 0 above maxEratSmall, below byte
+   `last': a fresh list, and the budget left (Sieve::accumulatePrimes). */
+fn firstAccumulate (reg ptr Sieve::t sieve, reg Bucket::bucketPtr pool, reg u64 last, reg u64 room) -> 
+   reg Bucket::bucketPtr, reg Primes::primePtr, reg Primes::primePtr, reg u64
+{ 
+  reg Bucket::bucketPtr bucket;
+  reg Primes::primePtr primes, end ;
+  reg u64 sievePrime, r, segmentLow;
+  reg ptr Wheel30::IDX_OF_t idx_of;
+
+  pool, bucket = Primes::alloc(pool);
+  end = bucket; end += 8;
+  segmentLow = 0;
+  idx_of = Wheel30::IDX_OF;
+  sievePrime = (maxEratSmall + 1)/ 30;
+  r = (64u)idx_of[(maxEratSmall + 1)% 30];
+  pool, end, room = Sieve::accumulatePrimes(sieve, pool, end, segmentLow, sievePrime, r, last, room);
+  pool, primes = Primes::getStart(pool, bucket, end);
+  return pool, primes, end, room;
+}
+
+/* The pool's budget (DC1-DC3 of ec/PLAN-lazy-pool.md, sections 12 and 14):
+   the queue may take w primes as long as w + K < 1023 n, n = M - 2 the
+   capacity (M = cfg[POOLBUCKETS]), K = PoolSlack + ChainWaste (NumChains +
+   bigMemSize) + FitsSlack the chains' and the slacks' share (memory.jazz).
+   Returns K, the capacity cap = 1023 n in words, and the scan's budget
+   room0 = cap - K, 0 when K alone does not fit.  All in u64 without wrap:
+   n < 2^50, bigMemSize <= 5463.  The exports call it first and refuse the
+   run without calling eratInit when room0 = 0; eratInit calls it again. */
+inline fn poolRoom (reg ptr Cfg::t cfg) -> reg u64, reg u64, reg u64
+{
+  reg u64 cap, k, room;
+  k = cfg[Cfg::BIGMEMSIZE];
+  k += NumChains;
+  k *= ChainWaste;
+  k += PoolSlack + FitsSlack;
+  cap = cfg[Cfg::POOLBUCKETS];
+  cap -= 2;
+  cap *= Bucket::bucketSize - 1;
+  room = 0;
+  if (k < cap) { room = cap; room -= k; }
+  return k, cap, room;
+}
+
+/* The three memories are the caller's arrays -- on its stack (eratCount,
+   goldbach) or the client's (eratApi.jazz); eratInit fills them.  As
+   pointers they would stay live across the whole function, which the
+   register allocator cannot afford: each waits on the stack and is brought
+   back right before the calls that use it. */
+inline fn eratInit (reg ptr EratSmall::SmallMem::t smallMem,
+                   reg ptr EratMedium::MediumMem::t mediumMem,
+                   reg ptr EratBig::BigMem::t bigMem,
+                   reg ptr Sieve::t sieve, reg Bucket::bucketPtr pool, 
+                   reg u64 segmentLow, reg ptr Cfg::t cfg) -> 
+       reg ptr EratSmall::SmallMem::t, 
+       reg ptr EratMedium::MediumMem::t, 
+       reg ptr EratBig::BigMem::t, 
+       reg ptr Sieve::t, reg Bucket::bucketPtr, reg Primes::primePtr,
+       reg Primes::primePtr, reg u64
+{
+  #spill(smallMem, mediumMem, bigMem);
+
+  /* The run's root: isqrt of the end of the segment holding hi, which
+     Cfg::init computed from hi. */
+  reg u64 sqrtMaxNum = cfg[Cfg::ROOT];
+  // the number of BYTES to scan for sieving primes: 0 .. sqrtMaxNum/30, the
+  // last one being the byte that holds the root itself
+  reg u64 sqrtMaxNum30_r = udiv_64_imm(sqrtMaxNum, 30); sqrtMaxNum30_r += 1;
+  stack u64 sqrtMaxNum30 = sqrtMaxNum30_r; 
+
+  // Init MemoryPool   
+  /* The pool is the caller's block of M = cfg[Cfg::POOLBUCKETS] buckets
+     (M >= 3, the caller's to check: below, M - 2 wraps).
+     - 2, and it is exact: MemoryPool::init rounds the pointer UP to a bucket
+     boundary, which costs the first bucket of the block, and then lays out
+     size + 1 of them, the capacity n = size and the status bucket S last
+     (memory.jazz).  The region therefore ends at most at
+     pool + (size + 2) * bucketBytes, and the block is M buckets long -- so
+     size = M - 2 is the largest that fits, and anything above it writes past
+     the malloc.  The capacity is n = M - 2 buckets. */
+  reg u64 size = cfg[Cfg::POOLBUCKETS];
+  size -= 2;
+  /* The pool's check (poolRoom above): the scan is handed the budget
+     room0 = 1023 n - K; it stores while more than one is left, so that
+     w <= room0 - 1 whatever the scan meets, and leaves 0 when it refuses a
+     prime.  The callers never call eratInit with room0 = 0. */
+  reg u64 cap, k, room;
+  k, cap, room = poolRoom(cfg);
+  stack u64 k_s = k;
+  stack u64 cap_s = cap;
+  stack u64 room0_s = room;
+  stack u64 room_s = room;
+  pool = MemoryPool::init(pool, size);
+  /* S, the status bucket: where the check leaves its numbers */
+  stack Bucket::bucketPtr status_s = [:u64 pool + 8];
+  // Init memories 
+  #unspill(mediumMem);
+  pool, mediumMem = EratMedium::MediumMem::init(pool, mediumMem);
+  #spill(mediumMem);
+  reg u64 bigMemSize = cfg[Cfg::BIGMEMSIZE];
+  #unspill(bigMem);
+  pool, bigMem = EratBig::BigMem::init(pool, bigMem, bigMemSize);
+  #spill(bigMem);
+  // Init EratSmall
+  #spill(pool); 
+  reg u64 sieveBytes = cfg[Cfg::BYTES];
+  #unspill(smallMem);
+  sieve, smallMem = EratSmall::init(sieve, smallMem, sieveBytes); 
+  sieveBytes = cfg[Cfg::BYTES];
+  sieve, smallMem = EratSmall::eratSmall(sieve, smallMem, sieveBytes);
+  #spill(smallMem);
+
+  reg Primes::primePtr end, primes;
+  reg u64 last, sievePrime, r;
+  // Be sure that the first segment is completely filled
+  #unspill(pool);
+
+  reg u64 sqrtSieveSpan = cfg[Cfg::SQRTSPAN];
+  if (sqrtSieveSpan > maxEratSmall) {
+    /* The first pass's primes are freed right after, and PoolSlack covers
+       them: it is given the budget and spends none of it.  They are all in
+       the queue again below, so a refusal here is one there. */
+    room = room_s;
+    if (room != 0) {
+      reg u64 last0 = udiv_64_imm(sqrtSieveSpan, 30); last0 += 1;
+      pool, primes, end, room = firstAccumulate(sieve, pool, last0, room);
+      #spill(sieve);
+      segmentLow = 0;
+      /* a refused first pass moves nothing into the chains: only freed */
+      if (room != 0) {
+        #unspill(mediumMem);
+        pool, mediumMem, primes = EratMedium::addPrimes(pool, mediumMem, primes, end, segmentLow, cfg, Primes::CLEAR);
+        #spill(mediumMem);
+      } else {
+        room_s = room;
+      }
+      // if some prime remain free them
+      pool = Primes::free(pool, primes);
+      // complete the sieve with eratMedium
+      #unspill(sieve, mediumMem);
+      sieveBytes = cfg[Cfg::BYTES];
+      pool, sieve, mediumMem = EratMedium::eratMedium(pool, sieve, mediumMem, sieveBytes);
+      #spill(mediumMem);
+    }
+  }
+
+  // Now initialise the list of prime
+
+  reg u64 bytes = cfg[Cfg::BYTES];
+  last = min(sqrtMaxNum30, bytes);
+  room = room_s;
+  pool, primes, end, room = firstAccumulate(sieve, pool, last, room);  
+  room_s = room;
+  stack Primes::primePtr initial_primes = primes;
+  stack Primes::primePtr end_s;
+  segmentLow = 0;
+  /* a refusal ends the scan: nothing is left to scan, and the loop's head
+     below leaves it (it subtracts last) */
+  if (room == 0) { sqrtMaxNum30 = last; }
+
+  while 
+    { sqrtMaxNum30 -= last; }
+    (sqrtMaxNum30 > 0) 
+    {
+      segmentLow += cfg[Cfg::SPAN];
+      end_s = end;
+      #unspill(smallMem, mediumMem);
+      smallMem, mediumMem, sieve, pool, primes, segmentLow = 
+        eratMediumSegment(smallMem, mediumMem, sieve, pool, primes, end_s, segmentLow, cfg, Primes::NOCLEAR); 
+      #spill(smallMem, mediumMem);
+      end = end_s;
+      sievePrime = 0; r = 0;
+      bytes = cfg[Cfg::BYTES];
+      last = min(sqrtMaxNum30, bytes);
+      room = room_s;
+      /* accumulatePrimes takes every register but five: primes waits on
+         the stack */
+      #spill(primes);
+      pool, end, room = Sieve::accumulatePrimes(sieve, pool, end, segmentLow, sievePrime, r, last, room); 
+      #unspill(primes);
+      room_s = room;
+      if (room == 0) { sqrtMaxNum30 = last; }
+    }  
+  #unspill(mediumMem);
+  pool, mediumMem = EratMedium::MediumMem::free(pool, mediumMem);
+  #spill(mediumMem);
+
+  /* The check itself, on the queue's w = room0 - room: need = w + K against
+     the capacity 1023 n.  A refused scan has room = 0 and need = room0 + K,
+     i.e. the capacity (or K itself when room0 = 0): at least what the run
+     needs, and never below the capacity.  need and the capacity are left in
+     S's words 1 and 2 for the harness's message. */
+  reg u64 need, ok;
+  need = room0_s;
+  need -= room_s;
+  need += k_s;
+  cap = cap_s;
+  reg Bucket::bucketPtr status = status_s;
+  [:u64 status + 8] = need;
+  [:u64 status + 16] = cap;
+  ok = 0;
+  if (need < cap) { ok = 1; }
+
+  primes = initial_primes; 
+  #unspill(smallMem, mediumMem, bigMem);
+  return smallMem, mediumMem, bigMem, sieve, pool, primes, end, ok;
+}
+
+inline fn eratSegment(reg ptr EratSmall::SmallMem::t smallMem,
+               reg ptr EratMedium::MediumMem::t mediumMem,
+               reg ptr EratBig::BigMem::t bigMem,
+               reg ptr Sieve::t sieve, 
+               reg Bucket::bucketPtr pool,
+               reg Primes::primePtr primes,
+               stack Primes::primePtr end_s,
+               reg u64 segmentLow,
+               reg ptr Cfg::t cfg) ->
+            reg ptr EratSmall::SmallMem::t,
+            reg ptr EratMedium::MediumMem::t,
+            reg ptr EratBig::BigMem::t,
+            reg ptr Sieve::t, 
+            reg Bucket::bucketPtr,
+            reg Primes::primePtr,
+            reg u64
+{
+  #spill(bigMem);
+  smallMem, mediumMem, sieve, pool, primes, segmentLow = 
+    eratMediumSegment(smallMem, mediumMem, sieve, pool, primes, end_s, segmentLow, cfg, Primes::CLEAR); 
+  #spill(sieve, segmentLow, smallMem, mediumMem);
+  primes = primes;
+  reg Primes::primePtr end = end_s;
+  #unspill(bigMem);
+  pool, bigMem, primes = EratBig::addPrimes(pool, bigMem, primes, end, segmentLow, cfg);
+  #spill(primes);
+  // perform the sieve with big primes 
+  #unspill(sieve);
+  sieve, bigMem, pool = EratBig::crossOff(sieve, bigMem, pool, cfg); 
+  #unspill(primes, segmentLow, smallMem, mediumMem);
+  segmentLow += cfg[Cfg::SPAN];
+  return smallMem, mediumMem, bigMem, sieve, pool, primes, segmentLow; 
+}
+
+/* The parameters of a run with segments of 2^log2SieveBytes bytes, and the
+   bounds of the build:
+     params[0] = log2SieveBytes, params[1] = SieveBytes, params[2] = SieveSpan,
+     params[3] = the DEFAULT pool's size in bytes (MemoryPoolBuckets buckets;
+                 the pool is the caller's, its size an argument of the exports),
+     params[4] = the largest hi a run can take: 2^64 - 1, every u64 (the last
+                 segment may be partial, see Cfg::init),
+     params[5] = MaxSieveBytes, what to allocate for a sieve,
+     params[6..7] = the range of log2SieveBytes.
+   Cfg::init is given hi = 0: only the sieve fields are read. */
+export fn getParams(reg ptr u64[8] params, reg u64 log2SieveBytes) -> reg ptr u64[8] 
+{
+  stack Cfg::t cfg;
+  #spill(params);
+  reg u64 hi = 0;
+  cfg = Cfg::init(cfg, log2SieveBytes, hi);
+  #unspill(params);
+  reg u64 t;
+  t = cfg[Cfg::LOG2];  params[0] = t;
+  t = cfg[Cfg::BYTES]; params[1] = t;
+  t = cfg[Cfg::SPAN];  params[2] = t;
+  params[3] = MemoryPoolBuckets * Bucket::bucketBytes; 
+  params[4] = -1;                   // 2^64 - 1
+  params[5] = MaxSieveBytes;        // what to allocate for a sieve
+  params[6] = minLog2SieveBytes;
+  params[7] = maxLog2SieveBytes;
+  return params;
+}
+
+
+
+
+       
+
+
