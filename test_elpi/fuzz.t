@@ -57,10 +57,11 @@ Fuzzing, as in test/: a character is replaced by ';', ' ' or '$'
   measure: precision 100.0% (13/13) recall 100.0% (13/13) F1 100.0%
   
   fuzzed input #8: p :- X is 2 + 3   4.
-  error:                         ^^^^^  recovered syntax error
+  error: line 1, column 18: skipped 4
   ast:
-    clause (:- p (is X (+ 2 Err«3   4»)))
-  measure: precision 100.0% (10/10) recall 76.9% (10/13) F1 87.0%
+    clause (:- p (is X (+ 2 3)))
+  note: not a subterm
+  measure: precision 63.6% (7/11) recall 53.8% (7/13) F1 58.3%
   
   fuzzed input #9: p :- X is 2 + 3 * ;.
   error:                             ^^ recovered syntax error
@@ -98,15 +99,16 @@ Fuzzing, as in test/: a character is replaced by ';', ' ' or '$'
   measure: precision 100.0% (33/33) recall 100.0% (33/33) F1 100.0%
   
   fuzzed input #2: pred append i list A, i:list A, o:list A.
-  error:                                 ^^^^^^^^  ^^^^^^^^  recovered syntax error
                    append [] L L.
                    append [X|XS] L [X|R] :- append XS L R.
+  error: line 1, column 22: skipped i:
+  error: line 1, column 32: skipped o:
   ast:
-    pred append (pred i:(i list A), i:Err«i:list A», i:Err«o:list A»)
+    pred append (pred i:(i list A), i:(list A), i:(list A))
     clause (append [] L L)
     clause (:- (append (:: X XS) L (:: X R)) (append XS L R))
   note: not a subterm
-  measure: precision 93.3% (28/30) recall 84.8% (28/33) F1 88.9%
+  measure: precision 94.1% (32/34) recall 97.0% (32/33) F1 95.5%
   
   fuzzed input #3: pred append i:list A, i:list A; o:list A.
   error:                                         ^           recovered syntax error

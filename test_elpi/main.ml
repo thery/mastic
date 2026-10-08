@@ -162,6 +162,8 @@ let show_result header input (errs, comps, _, printed, spans) =
     end;
     (stop + 1, false)) (0, true) lines in
   List.iter (function
+    | Mastic.ErrorResilientParser.LexError (p, m) when String.starts_with ~prefix:"skipped " m ->
+        Printf.printf "error: line %d, column %d: %s\n" p.Lexing.pos_lnum (p.Lexing.pos_cnum - p.Lexing.pos_bol) m
     | Mastic.ErrorResilientParser.LexError (p, m) ->
         Printf.printf "error: %s lexical error\n" (one_line m) |> ignore; ignore p
     | Mastic.ErrorResilientParser.ParseError _ -> ()) (List.rev errs);

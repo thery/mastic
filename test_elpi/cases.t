@@ -36,26 +36,23 @@ good program it comes from (cases/*.ref), see the measure in main.ml
   $ ./main.exe -ref cases/04_close_paren.ref cases/04_close_paren.elpi
   input: p 1.
          p X :- q X), r.
-  error:        ^^^^     recovered syntax error
          p 3.
+  error: line 2, column 10: skipped )
   ast:
     clause (p 1)
-    clause (:- (p X) (, Err«q X)» r))
+    clause (:- (p X) (, (q X) r))
     clause (p 3)
-  measure: precision 100.0% (17/17) recall 85.0% (17/20) F1 91.9%
+  measure: precision 100.0% (20/20) recall 100.0% (20/20) F1 100.0%
   $ ./main.exe -ref cases/05_open_bracket.ref cases/05_open_bracket.elpi
   input: p 1.
          p [X|Y :- q X.
-  error: ^^^^^^^^^^^^^^ recovered syntax error
          p 3.
-  error: line 2, column 13: completed with _
-  error: line 2, column 13: completed with _
-  error: line 2, column 13: completed with (error)
+  error: line 2, column 6: completed with ]
   ast:
     clause (p 1)
-    error Err« p [X|Y :- q X.»
+    clause (:- (p (:: X Y)) (q X))
     clause (p 3)
-  measure: precision 100.0% (8/8) recall 40.0% (8/20) F1 57.1%
+  measure: precision 100.0% (20/20) recall 100.0% (20/20) F1 100.0%
   $ ./main.exe -ref cases/06_bad_list_tail.ref cases/06_bad_list_tail.elpi
   input: p 1.
          p [X|] :- q X.
@@ -100,10 +97,13 @@ good program it comes from (cases/*.ref), see the measure in main.ml
          p 2..
   error:    ^^ recovered syntax error
          p 3.
+  error: line 2, column 3: completed with .
   ast:
     clause (p 1)
-    clause (p 2 Err«..» p 3)
-  measure: precision 80.0% (8/10) recall 66.7% (8/12) F1 72.7%
+    clause (p 2)
+    error Err«..»
+    clause (p 3)
+  measure: precision 100.0% (12/12) recall 100.0% (12/12) F1 100.0%
   $ ./main.exe -ref cases/11_empty_body.ref cases/11_empty_body.elpi
   input: p 1.
          p X :- .
@@ -302,19 +302,17 @@ good program it comes from (cases/*.ref), see the measure in main.ml
   input: p 1.
          p X :-
            q X,
-  error:   ^^^^ recovered syntax error
            r X,
-  error: ^^^^^^ recovered syntax error
            s X X ),
-  error: ^^^^^^^^^  recovered syntax error
            t X,
            u X.
          p 3.
+  error: line 5, column 8: skipped )
   ast:
     clause (p 1)
-    clause (:- (p X) (, Err«q X,   r X,   s X X )» (t X) (u X)))
+    clause (:- (p X) (, (q X) (r X) (s X X) (t X) (u X)))
     clause (p 3)
-  measure: precision 95.5% (21/22) recall 65.6% (21/32) F1 77.8%
+  measure: precision 96.9% (31/32) recall 96.9% (31/32) F1 96.9%
   $ ./main.exe -ref cases/30_attribute_bad.ref cases/30_attribute_bad.elpi
   input: :name 3
   error:  ^^^^^^ recovered syntax error

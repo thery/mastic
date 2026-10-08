@@ -264,8 +264,8 @@ module Recovery = struct
     | X (N N_program), _,_,1 -> true
     | _ -> false
 
-  let handle_unexpected_token ~productions ~next_token ~acceptable_tokens
-      ~reducible_productions ~generation_streak ~lookahead =
+  let default_strategy ?(line_ends = false) ~productions ~next_token ~acceptable_tokens
+      ~reducible_productions ~generation_streak () =
     let open Mastic.ErrorResilientParser in
     (* finish the current declaration: reduce if possible, otherwise insert
        the final dot or a closing bracket if it fits, otherwise try the dot
@@ -294,10 +294,113 @@ module Recovery = struct
     else match next_token.t with
     | Tokens.FULLSTOP | Tokens.EOF -> finish ()
     | t when restart_point t next_token.b -> finish ()
+    (* new: the token ends its line, and the next line looks like a new declaration *)
+    | _ when line_ends -> finish ()
     | _ ->
     match reducible_productions with
     | p :: _ when List.exists is_term productions -> Reduce p
     | _ -> TurnIntoError
+
+  (* Looking ahead (new): the input is lexed upfront, and Mastic can
+     simulate a repair on the following tokens. The actions that make sense
+     here are tried, each followed by the recovery for the next
+     [lookahead_limit] tokens, and the one that loses the fewest tokens of
+     the input into errors wins; the default strategy is kept unless another
+     action is clearly better (by a token). ELPI_LOOKAHEAD=0 turns the search
+     off, ELPI_LOOKAHEAD_DEBUG=1 prints the choices. *)
+  let lookahead_limit = try int_of_string (Sys.getenv "ELPI_LOOKAHEAD") with _ -> 10
+  let debug_choice = Sys.getenv_opt "ELPI_LOOKAHEAD_DEBUG" <> None
+
+  (* the tokens skipped, reported as errors by resilient_parse *)
+  let skipped : token Mastic.ErrorResilientParser.tok list ref = ref []
+  let skipped_message = "skipped "
+
+  let show_action = let open Mastic.ErrorResilientParser in function
+    | TurnIntoError | TurnIntoThisError _ -> "error" | GenerateHole -> "hole" | Skip -> "skip"
+    | GenerateToken t -> "insert " ^ t.s
+    | Reduce p -> "reduce" ^ string_of_int (Grammar.MenhirInterpreter.production_index p)
+
+  (* the cost of a simulation: a token of the input lost in an error costs
+     10, an inserted token 1; a simulation that does not reach its horizon
+     (it seems to loop) is out *)
+  let cost (r : Mastic.ErrorResilientParser.simulation) =
+    if r.shifted < 0 then max_int
+    else (if r.completed then 0 else 1000) + 10 * r.lost + r.inserted
+  let margin = 10
+
+  (* bracket balance on the tokens ahead: the first closing bracket that is
+     not matched before the end of the declaration (the next dot outside
+     brackets), if any *)
+  let unmatched_closer_ahead la (next : token Mastic.ErrorResilientParser.tok) =
+    let ahead k = (Mastic.ErrorResilientParser.ahead la k).t in
+    let rec scan k t depth =
+      if k > 5000 then None else
+      match t with
+      | Tokens.LPAREN | Tokens.LBRACKET | Tokens.LCURLY -> scan (k + 1) (ahead k) (depth + 1)
+      | Tokens.RPAREN | Tokens.RBRACKET | Tokens.RCURLY ->
+          if depth = 0 then Some t else scan (k + 1) (ahead k) (depth - 1)
+      | Tokens.FULLSTOP when depth = 0 -> None
+      | Tokens.EOF -> None
+      | _ -> scan (k + 1) (ahead k) depth in
+    scan 0 next.t 0
+
+  (* the unexpected token ends its line, and the next line starts at column
+     0: likely a new declaration (unless the token asks for a continuation) *)
+  let line_ends la (next : token Mastic.ErrorResilientParser.tok) =
+    let n = Mastic.ErrorResilientParser.ahead la 0 in
+    n.b.pos_lnum > next.e.pos_lnum && n.b.pos_cnum = n.b.pos_bol && n.t <> Tokens.EOF &&
+    match next.t with
+    | Tokens.LPAREN | Tokens.LBRACKET | Tokens.LCURLY | Tokens.VDASH | Tokens.CONJ | Tokens.CONJ2
+    | Tokens.PIPE | Tokens.BIND | Tokens.OR | Tokens.ARROW | Tokens.IFF | Tokens.COLON -> false
+    | _ -> true
+
+  let handle_unexpected_token ~productions ~next_token ~acceptable_tokens
+      ~reducible_productions ~generation_streak ~lookahead =
+    let open Mastic.ErrorResilientParser in
+    let default = default_strategy ~line_ends:(line_ends lookahead next_token) ~productions ~next_token
+      ~acceptable_tokens ~reducible_productions ~generation_streak () in
+    let action =
+      (* no search when giving up after too many insertions (it could loop) *)
+      if lookahead.in_simulation || lookahead_limit <= 0 || generation_streak >= 10 then default else
+      (* a dot ends a declaration: it is not turned into an error or skipped
+         (unless by the default strategy), the damage could show after the
+         horizon of the simulation *)
+      let dot = next_token.t = Tokens.FULLSTOP in
+      (* a closer is not inserted when the same closer comes later *)
+      let later = unmatched_closer_ahead lookahead next_token in
+      let candidates =
+        default :: (if dot then [] else [TurnIntoError]) @ GenerateHole ::
+        (if dot || next_token.t = Tokens.EOF then [] else [Skip]) @
+        (List.filter (fun (t : token tok) -> Some t.t <> later) acceptable_tokens
+         |> List.map (fun t -> GenerateToken t)) @
+        List.map (fun p -> Reduce p) reducible_productions in
+      let same a b = match a, b with
+        | Reduce p, Reduce q ->
+            Grammar.MenhirInterpreter.(production_index p = production_index q)
+        | GenerateToken t, GenerateToken u -> t.s = u.s
+        | TurnIntoThisError _, _ | _, TurnIntoThisError _ -> false
+        | _ -> show_action a = show_action b in
+      let candidates = List.fold_left (fun acc a ->
+        if List.exists (same a) acc then acc else a :: acc) [] candidates |> List.rev in
+      (* the semantic actions run in the simulations may defer errors *)
+      let saved = !Ast.Term.deferred in
+      let scored = List.map (fun a ->
+        let r = lookahead.simulate ~limit:lookahead_limit [a] in
+        Ast.Term.deferred := saved;
+        a, cost r) candidates in
+      let best = List.fold_left (fun (a, c) (a', c') -> if c' < c then (a', c') else (a, c))
+        (List.hd scored) scored in
+      let best = if snd best < 1000 && snd best + margin <= snd (List.hd scored) then best
+        else List.hd scored in
+      if debug_choice then
+        Printf.eprintf "at %d %S: %s -> %s\n%!" next_token.b.pos_cnum next_token.s
+          (String.concat ", " (List.map (fun (a, c) -> Printf.sprintf "%s:%d" (show_action a) c) scored))
+          (show_action (fst best));
+      fst best in
+    (match action with
+     | Skip when not lookahead.in_simulation -> skipped := next_token :: !skipped
+     | _ -> ());
+    action
 end
 
 module ErProgram = Mastic.ErrorResilientParser.MakeLookahead(Grammar.MenhirInterpreter)(ProgramParser)(Recovery)
@@ -314,14 +417,63 @@ let rec merge_errors = function
    actions defer their errors; these errors are added to the ones of Mastic,
    one per position. An accumulate parses (normally) another file in the
    middle of this one, hence the saving of the flags. *)
+(* Brackets left open in the head of a clause. In a declaration whose ( or [
+   are still open at its final dot (never the case in a valid program: a dot
+   cannot be inside parentheses or brackets), the brackets opened before the
+   first :- and never closed are closed just before it: in
+   p [X|Y :- q X.  the list is the argument of p, not  [X | (Y :- q X)].
+   The tokens inserted are returned as completions. *)
+let close_brackets_in_head (tokens : Tokens.token Mastic.ErrorResilientParser.tok array) =
+  let open Mastic.ErrorResilientParser in
+  let inserts = ref [] in  (* (index, tokens to insert before it) *)
+  let closer = function
+    | Tokens.LPAREN -> { s = ")"; t = Tokens.RPAREN; b = Lexing.dummy_pos; e = Lexing.dummy_pos }
+    | _ -> { s = "]"; t = Tokens.RBRACKET; b = Lexing.dummy_pos; e = Lexing.dummy_pos } in
+  (* stack: the open brackets (token, index); neck: the first :- with the
+     brackets open at that point *)
+  let rec scan i stack neck =
+    if i < Array.length tokens then
+      match tokens.(i).t with
+      | Tokens.LPAREN | Tokens.LBRACKET -> scan (i + 1) ((tokens.(i).t, i) :: stack) neck
+      | Tokens.RPAREN | Tokens.RBRACKET ->
+          let t = tokens.(i).t in
+          (match stack with
+           | (o, _) :: stack' when (o = Tokens.LPAREN) = (t = Tokens.RPAREN) -> scan (i + 1) stack' neck
+           | _ -> scan (i + 1) stack neck)
+      | Tokens.VDASH when neck = None -> scan (i + 1) stack (Some (i, stack))
+      | Tokens.FULLSTOP | Tokens.EOF ->
+          (match neck with
+           | Some (j, open_at_neck) when open_at_neck <> [] ->
+               (* the brackets open at the neck and still open now *)
+               let still = List.filter (fun x -> List.mem x stack) open_at_neck in
+               if still <> [] then
+                 let b = if j > 0 then tokens.(j - 1).e else tokens.(j).b in
+                 inserts := (j, List.map (fun (o, _) -> { (closer o) with b; e = b }) still) :: !inserts
+           | _ -> ());
+          scan (i + 1) [] None
+      | _ -> scan (i + 1) stack neck in
+  scan 0 [] None;
+  if !inserts = [] then tokens, [] else
+  let out = ref [] in
+  Array.iteri (fun i t ->
+    (match List.assoc_opt i !inserts with Some l -> out := List.rev_append l !out | None -> ());
+    out := t :: !out) tokens;
+  Array.of_list (List.rev !out),
+  List.concat_map (fun (_, l) -> List.map (fun t -> t.b, t.s) l) !inserts
+
 let resilient_parse lexbuf =
   let saved = !Lexer.recovering, !Lexer.errors, !Ast.Term.deferring, !Ast.Term.deferred in
   let restore () =
     let r, l, d, dl = saved in
     Lexer.recovering := r; Lexer.errors := l; Ast.Term.deferring := d; Ast.Term.deferred := dl in
   Lexer.recovering := true; Lexer.errors := []; Ast.Term.deferring := true; Ast.Term.deferred := [];
+  Recovery.skipped := [];
   let errs, comps, ast = Fun.protect ~finally:restore (fun () ->
-    let errs, comps, ast = ErProgram.parse lexbuf in
+    let start = lexbuf.Lexing.lex_curr_p in
+    let tokens, closed = close_brackets_in_head (ErProgram.lex lexbuf) in
+    let errs, comps, ast = ErProgram.parse_tokens start tokens in
+    let comps = if closed = [] then comps else
+      List.stable_sort (fun (p, _) (q, _) -> compare q.Lexing.pos_cnum p.Lexing.pos_cnum) (closed @ comps) in
     let lexing_pos { Util.Loc.source_name; line; line_starts_at; source_start; _ } =
       { Lexing.pos_fname = source_name; pos_lnum = line; pos_bol = line_starts_at; pos_cnum = source_start } in
     let sem = List.filter_map (function
@@ -330,7 +482,10 @@ let resilient_parse lexbuf =
       | Failure m -> Some (Mastic.ErrorResilientParser.LexError(lexbuf.Lexing.lex_start_p, m))
       | _ -> None) !Ast.Term.deferred in
     let lex = List.map (fun (p,m) -> Mastic.ErrorResilientParser.LexError(p,m)) !Lexer.errors in
-    sem @ lex @ errs, comps, ast) in
+    (* the tokens skipped by the recovery *)
+    let skipped = List.map (fun t ->
+      Mastic.ErrorResilientParser.(LexError(t.b, Recovery.skipped_message ^ t.s))) !Recovery.skipped in
+    sem @ lex @ errs @ skipped, comps, ast) in
   (* errs is in reverse order, as returned by Mastic *)
   let pos = function Mastic.ErrorResilientParser.LexError(p,_) | ParseError(p,_) -> p.Lexing.pos_cnum in
   let errs = List.stable_sort (fun x y -> compare (pos y) (pos x)) errs in
