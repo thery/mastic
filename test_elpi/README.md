@@ -57,6 +57,8 @@ are the sections 4 to 6 below.
 | `parser/ast.ml` | the AST, with its error nodes (step 1) |
 | `parser/grammar.mly` | the grammar, with its error rules (step 2) |
 | `parser/parse.ml` | the recovery strategy, module `Recovery` (step 3), and the entry point `Parse.Internal.program_resilient` |
+| `STRATEGY.md` | the recovery strategy, compared rule by rule with the first version (the PR on Elpi) |
+| `LOOKAHEAD.md` | the recovery that looks ahead: lexing upfront, trying repairs, in detail |
 | `parser/lexer.mll.in` | the lexer, which returns error tokens instead of raising (section 7) |
 | `main.ml` | the test driver, as `test/main.ml`, plus the measure (section 8) |
 | `cases/`, `cases.t` | 32 broken programs and their good versions, as a cram test |
@@ -287,6 +289,13 @@ never skips nor turns into an error a `.`; a token that ends its line before
 a line starting at column 0 finishes the declaration; and a `(` or `[` left
 open in the head of a clause is closed before its `:-` (`p [X|Y :- q X.`
 reads `p [X|Y] :- q X.`).
+
+**Looking ahead.** The input is now lexed before parsing, and at an error the
+recovery sees all the tokens that follow and can try several repairs before
+choosing one (an extra `)` is dropped instead of swallowing what precedes it,
+a `]` left open is closed before `:-`, …): this is explained in detail, with
+the change in Mastic, each rule, the experiments and the results, in
+[`LOOKAHEAD.md`](LOOKAHEAD.md).
 
 [`STRATEGY.md`](STRATEGY.md) compares this strategy, rule by rule, with the
 one of the first version (the PR LPCIC/elpi#385 on Elpi), and explains the
